@@ -13,6 +13,16 @@ import datasets
 from tqdm import tqdm
 import pandas as pd
 
+# 定义Args类在模块级别，使其可以被pickle序列化
+class Args:
+    def __init__(self, label, data_path, out_dir, batch_size, gpus, save_all):
+        self.label = label
+        self.data_path = data_path
+        self.out_dir = out_dir
+        self.batch_size = batch_size
+        self.gpus = gpus
+        self.save_all = save_all
+
 class InitialOptimizationGenerator:
     def __init__(self, model_path: str, adapter_path: str):
         self.model_path = model_path
@@ -60,7 +70,7 @@ class InitialOptimizationGenerator:
         
         return str(max(cands, key=score))
     
-    def gpu_worker(self, rank: int, gpu_id: int, args, subset_indices: List[int], return_dict):
+    def gpu_worker(self, rank: int, gpu_id: int, args, data: List[Dict], subset_indices: List[int], return_dict):
         try:
             device = torch.device(f"cuda:{gpu_id}")
             torch.cuda.set_device(device)
@@ -105,8 +115,8 @@ class InitialOptimizationGenerator:
             model = model.merge_and_unload()
             model.eval()
 
-            full_dataset = datasets.load_from_disk(args.data_path)
-            my_dataset = full_dataset.select(subset_indices)
+            # 使用传递的数据，不再重复加载数据集
+            my_dataset = [data[i] for i in subset_indices]
             
             prompts = [self.get_prompt(item["prompt"]) for item in my_dataset]
             raw_full_texts = [item["prompt"] for item in my_dataset] 
@@ -199,16 +209,8 @@ class InitialOptimizationGenerator:
             return_dict[rank] = None
     
     def generate_optimization_strategies(self, data_path: str, out_dir: str, label: str, batch_size: int = 4, gpus: str = "0,1,2", save_all: bool = False):
-        class Args:
-            def __init__(self):
-                self.label = label
-                self.data_path = data_path
-                self.out_dir = out_dir
-                self.batch_size = batch_size
-                self.gpus = gpus
-                self.save_all = save_all
-        
-        args = Args()
+        # 使用模块级别的Args类
+        args = Args(label, data_path, out_dir, batch_size, gpus, save_all)
         mp.set_start_method('spawn', force=True)
         
         gpu_list = [int(x) for x in args.gpus.split(",")]
@@ -220,9 +222,42 @@ class InitialOptimizationGenerator:
         print(f"[INFO] Output Dir : {out_dir}")
         print(f"[INFO] Strategy   : Strict 8192 length + EOS Cleaning")
         
-        full_dataset = datasets.load_from_disk(args.data_path)
-        total_samples = len(full_dataset)
-        print(f"[INFO] Total samples: {total_samples}")
+        # 检查data_path是否是目录且包含IR文件
+        data_path_obj = Path(args.data_path)
+        dataset_data = []
+        
+        if data_path_obj.is_dir():
+            # 查找目录中的IR文件
+            ir_files = list(data_path_obj.glob("*.ll"))
+            
+            if ir_files:
+                print(f"[INFO] Found {len(ir_files)} IR files in directory {data_path_obj}")
+                # 创建临时数据集
+                for i, ir_file in enumerate(ir_files):
+                    with open(ir_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    # 构建prompt格式，参考原始数据集的结构
+                    prompt = f"[INST]Given the following LLVM IR, propose key optimization transformation steps to outperform LLVM -O3.\nWrite your answer inside a single <code>...</code> block.\nInside <code>, write ONLY <step></step> blocks.\nEach step MUST follow this format:\n<step>\n**Transformation**: [Brief name of the optimization]\n**Change**: [A short description of the change applied to the code]\n</step>\nDo NOT output optimized IR.\n\n<ir>{content}</ir>[/INST]\n"
+                    dataset_data.append({"prompt": prompt})
+                
+                total_samples = len(dataset_data)
+                print(f"[INFO] Total samples: {total_samples}")
+            else:
+                # 如果目录中没有IR文件，尝试作为预格式化数据集加载
+                try:
+                    full_dataset = datasets.load_from_disk(args.data_path)
+                    dataset_data = [item['prompt'] for item in full_dataset]
+                    total_samples = len(dataset_data)
+                    print(f"[INFO] Loaded pre-formatted dataset with {total_samples} samples")
+                except Exception as e:
+                    print(f"[ERROR] Failed to load dataset: {e}")
+                    raise
+        else:
+            # 尝试作为预格式化数据集加载
+            full_dataset = datasets.load_from_disk(args.data_path)
+            dataset_data = [item for item in full_dataset]
+            total_samples = len(dataset_data)
+            print(f"[INFO] Total samples: {total_samples}")
 
         indices = list(range(total_samples))
         chunk_size = math.ceil(total_samples / len(gpu_list))
@@ -243,7 +278,7 @@ class InitialOptimizationGenerator:
                 break
             p = mp.Process(
                 target=self.gpu_worker,
-                args=(rank, gpu_id, args, chunks[rank], return_dict)
+                args=(rank, gpu_id, args, dataset_data, chunks[rank], return_dict)
             )
             p.start()
             processes.append(p)

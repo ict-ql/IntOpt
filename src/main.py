@@ -87,39 +87,76 @@ class IR_Optimizer:
         temp_input = temp_dir / "input.ll"
         shutil.copy2(input_file, temp_input)
         
-        # 步骤3: 创建临时数据集结构（模拟批处理格式）
+        # 步骤3: 创建临时数据集结构（包含IR文件）
         dataset_dir = temp_dir / "dataset"
         dataset_dir.mkdir(parents=True, exist_ok=True)
         
-        # 创建必要的文件结构
-        (dataset_dir / "data").mkdir(parents=True, exist_ok=True)
+        # 将输入IR文件复制到临时数据集目录
+        temp_input_in_dataset = dataset_dir / f"{input_path.name}"
+        shutil.copy2(temp_input, temp_input_in_dataset)
         
         # 步骤4: 生成初始优化策略
         print("Step 1: Initial optimization strategy generation")
         initial_out_dir = temp_dir / "step1_initial"
         
-        # 注意：这里需要修改初始优化策略生成模块以支持单个文件
-        # 由于时间限制，我们先创建一个简化版本
-        # 实际实现需要根据模型的输入格式进行调整
+        # 调用初始优化策略生成模块
+        initial_out_dir = self.initial_optimizer.generate_optimization_strategies(
+            data_path=str(dataset_dir),
+            out_dir=str(initial_out_dir),
+            label="icml-13b-ftd-step-5k-4000-final",
+            batch_size=1,
+            gpus=self.config.gpus,
+            save_all=False
+        )
         
-        # 步骤5: 模拟优化策略映射
-        print("Step 2: Strategy mapping")
+        # 步骤5: 优化策略映射
+        print("\nStep 2: Strategy mapping")
         mapping_out_dir = temp_dir / "step2_mapping"
-        mapping_out_dir.mkdir(parents=True, exist_ok=True)
         
-        # 步骤6: 模拟优化策略精化
-        print("Step 3: Strategy refinement")
+        # 调用策略映射模块
+        mapping_out_dir = self.strategy_mapper.map_strategies_to_passes(
+            in_dir=os.path.join(initial_out_dir, "wrong"),
+            out_dir=str(mapping_out_dir),
+            topk=3,
+            emit="tokens"
+        )
+        
+        # 步骤6: 优化策略精化
+        print("\nStep 3: Strategy refinement")
         refinement_out_dir = temp_dir / "step3_refinement"
-        refinement_out_dir.mkdir(parents=True, exist_ok=True)
         
-        # 步骤7: 模拟LLM调用优化
-        print("Step 4: LLM optimization")
+        # 调用策略精化模块
+        refinement_out_dir = self.strategy_refiner.refine_strategies(
+            in_dir=mapping_out_dir,
+            ll_dir=self.config.ll_dir,
+            out_dir=str(refinement_out_dir),
+            timeout=30,
+            verify_timeout=4
+        )
+        
+        # 步骤7: LLM调用优化
+        print("\nStep 4: LLM optimization")
         llm_out_dir = temp_dir / "step4_llm"
-        llm_out_dir.mkdir(parents=True, exist_ok=True)
         
-        # 步骤8: 复制结果到输出目录
+        # 调用LLM优化模块
+        llm_out_dir = self.llm_optimizer.optimize_with_llm(
+            in_dir=refinement_out_dir,
+            out_dir=str(llm_out_dir),
+            model="gpt-5",
+            api_mode="auto",
+            workers=1
+        )
+        
+        # 步骤8: 处理优化结果
         output_file = output_path / f"{input_path.stem}.optimized.ll"
-        shutil.copy2(temp_input, output_file)
+        
+        # 查找优化后的文件并复制到输出目录
+        optimized_files = list(llm_out_dir.glob("*.ll")) if isinstance(llm_out_dir, Path) else list(Path(llm_out_dir).glob("*.ll"))
+        if optimized_files:
+            shutil.copy2(optimized_files[0], output_file)
+        else:
+            # 如果没有生成优化文件，复制原始文件
+            shutil.copy2(temp_input, output_file)
         
         print(f"Optimization completed. Output file: {output_file}")
         
