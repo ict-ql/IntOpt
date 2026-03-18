@@ -12,6 +12,7 @@ from modules.strategy_mapping import StrategyMapping
 from modules.strategy_refinement import StrategyRefinement
 from modules.llm_client import LLMClient
 from modules.post_processing import PostProcessor
+from modules.diff_testing import DiffTester
 from modules.utils import extract_single_block, log
 
 
@@ -38,7 +39,7 @@ class Config:
         "gpus": "0,1,2",
     }
 
-    _YAML_SECTIONS = ("model", "llvm", "llm", "run")
+    _YAML_SECTIONS = ("model", "llvm", "llm", "run", "diff_testing")
 
     def __init__(self, config_file=None, **kwargs):
         cfg = dict(self._DEFAULTS)
@@ -72,6 +73,13 @@ class IROptimizer:
         self.strategy_refine = StrategyRefinement(opt_bin=config.opt_bin)
         self.llm = LLMClient(base_url=config.base_url, api_key=config.api_key)
         self.post_proc = PostProcessor()
+        self.diff_tester = DiffTester(
+            llm=self.llm,
+            llc=getattr(config, "llc",
+                        "/home/amax/yangz/Env/llvm-project/build/bin/llc"),
+            clangxx=getattr(config, "clangxx",
+                            "/home/amax/yangz/Env/llvm-project/build/bin/clang++"),
+        )
 
     # ------------------------------------------------------------------
     # Prompt rewriting (inject refined advice into the realization prompt)
@@ -304,8 +312,106 @@ class IROptimizer:
             return self.optimize_single_file(input_path, output_dir)
         elif mode == "batch":
             return self.optimize_batch(input_path, output_dir)
+        elif mode == "diff_test":
+            return self.diff_test(input_path, output_dir)
         else:
             raise SystemExit(f"Invalid mode: {mode}")
+
+    # ------------------------------------------------------------------
+    # Diff testing mode
+    # ------------------------------------------------------------------
+
+    def diff_test(self, input_path: str, output_dir: str):
+        """Run differential testing on optimised IR.
+
+        *input_path* can be:
+          - A directory already containing a 'bins/' subfolder → skip straight to fuzzing.
+          - A directory containing a 'harness/' subfolder → build + fuzz.
+          - A directory with *.optimized.ll (and a sibling original dir) → full pipeline.
+          - Two colon-separated paths  original_dir:optimized_dir  → full pipeline.
+        """
+        cfg = self.config
+        work_dir = Path(output_dir) / "diff_test"
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        fuzz_runs = getattr(cfg, "fuzz_runs", 200000)
+        fuzz_timeout = getattr(cfg, "fuzz_timeout", 600)
+        build_workers = getattr(cfg, "build_workers", 16)
+
+        # Check if bins already exist → just fuzz
+        bin_dir = work_dir / "bins"
+        if bin_dir.is_dir() and any(bin_dir.rglob("*_fuzz")):
+            log("Found existing fuzzing binaries, running fuzzing directly")
+            results = self.diff_tester.run_fuzzing(
+                str(bin_dir), fuzz_runs=fuzz_runs, fuzz_timeout=fuzz_timeout,
+            )
+            self._write_fuzz_report(results, work_dir)
+            return str(work_dir)
+
+        # Check if harnesses already exist → build + fuzz
+        harness_dir = work_dir / "harness"
+        combined_dir = work_dir / "combined"
+        if harness_dir.is_dir() and any(harness_dir.glob("*.fuzz.cc")):
+            log("Found existing harnesses, building and fuzzing")
+            if not combined_dir.is_dir():
+                raise SystemExit(
+                    "harness/ exists but combined/ is missing — "
+                    "cannot build without combined IR"
+                )
+            self.diff_tester.build_binaries(
+                str(combined_dir), str(harness_dir), str(bin_dir),
+                workers=build_workers,
+            )
+            results = self.diff_tester.run_fuzzing(
+                str(bin_dir), fuzz_runs=fuzz_runs, fuzz_timeout=fuzz_timeout,
+            )
+            self._write_fuzz_report(results, work_dir)
+            return str(work_dir)
+
+        # Full pipeline: need original_dir and optimized_dir
+        if ":" in input_path:
+            original_dir, optimized_dir = input_path.split(":", 1)
+        else:
+            # Assume input_path is the output_dir from a previous optimize run
+            # containing *.optimized.ll, and look for an 'input' or 'll_dir'
+            optimized_dir = input_path
+            original_dir = getattr(cfg, "ll_dir", "")
+            if not original_dir or not Path(original_dir).is_dir():
+                raise SystemExit(
+                    "Cannot determine original IR directory. Either pass "
+                    "original_dir:optimized_dir or set ll_dir in config."
+                )
+
+        log("Running full diff-testing pipeline")
+        results = self.diff_tester.run_full(
+            original_dir=original_dir,
+            optimized_dir=optimized_dir,
+            work_dir=str(work_dir),
+            model=getattr(cfg, "llm_model", "gpt-5"),
+            api_mode=getattr(cfg, "api_mode", "auto"),
+            workers=getattr(cfg, "workers", 50),
+            build_workers=build_workers,
+            fuzz_runs=fuzz_runs,
+            fuzz_timeout=fuzz_timeout,
+        )
+        self._write_fuzz_report(results, work_dir)
+        return str(work_dir)
+
+    @staticmethod
+    def _write_fuzz_report(results: dict, work_dir: Path) -> None:
+        """Write a simple CSV summary of fuzzing results."""
+        import csv
+        report = work_dir / "fuzz_report.csv"
+        with report.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["file", "status", "exit_code"])
+            w.writeheader()
+            for stem, info in sorted(results.items()):
+                w.writerow({
+                    "file": stem,
+                    "status": info["status"],
+                    "exit_code": info["exit_code"],
+                })
+        log(f"Fuzzing report: {report}")
 
 
 # ======================================================================
@@ -314,9 +420,10 @@ class IROptimizer:
 
 def parse_args():
     p = argparse.ArgumentParser(description="LLVM IR Optimizer")
-    p.add_argument("--mode", choices=["single", "batch"], required=True)
+    p.add_argument("--mode", choices=["single", "batch", "diff_test"], required=True)
     p.add_argument("--input", required=True,
-                   help="Input .ll file (single) or directory (batch)")
+                   help="Input .ll file (single), directory (batch), "
+                        "or original_dir:optimized_dir (diff_test)")
     p.add_argument("--output", required=True, help="Output directory")
     p.add_argument("--config", default="../config/config.yaml")
 
