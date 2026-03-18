@@ -30,8 +30,16 @@ class StrategyRefinement:
         if not p.exists():
             return ""
         text = p.read_text(encoding="utf-8", errors="ignore")
-        text = (text or "").strip()
-        return text
+        code_blocks: List[str] = []
+        for m in self.CODE_RE.finditer(text):
+            blk = self._clean_block(m.group(1))
+            # Filter out the common placeholder caught from "single <code>...</code> block"
+            if blk == "..." or not blk:
+                continue
+            code_blocks.append(blk)
+        if code_blocks:
+            advice = code_blocks[0] if len(code_blocks) >= 1 else ""
+        return advice
     
     def log(self, msg: str) -> None:
         ts = time.strftime("%H:%M:%S")
@@ -76,30 +84,6 @@ class StrategyRefinement:
         s = self._unescape_html(s or "")
         s = s.strip("\n\r\t ")
         return s
-    
-    def extract_ir_and_advice(self, ll_path: Path) -> Tuple[str, str]:
-        text = ll_path.read_text(encoding="utf-8", errors="ignore")
-
-        m_ir = self.IR_RE.search(text)
-        ir = self._clean_block(m_ir.group(1)) if m_ir else ""
-
-        code_blocks: List[str] = []
-        for m in self.CODE_RE.finditer(text):
-            blk = self._clean_block(m.group(1))
-            if blk == "..." or not blk:
-                continue
-            code_blocks.append(blk)
-
-        advice = ""
-
-        if ir:
-            advice = code_blocks[0] if code_blocks else ""
-            return ir, advice
-
-        if code_blocks:
-            ir = code_blocks[0]
-            advice = code_blocks[1] if len(code_blocks) >= 2 else ""
-        return ir, advice
     
     def run_opt(self, opt_bin: Path, ll_path: Path, pipeline: str, timeout_sec: int) -> Tuple[int, str, str, float]:
         cmd = [str(opt_bin), "-disable-output", f"-passes={pipeline}", str(ll_path)]
@@ -372,20 +356,25 @@ class StrategyRefinement:
             parts.append(analysis)
         parts.append("</analysis>")
         parts.append("")
+        parts.append("You need to keep boundary checks.")
+        # `and the full optimized LLVM IR wrapped in <code>...</code>...` just for making the advice as brief as it can
         parts.append("Please output the final optimization advice wrapped in <advice>...</advice> and the full optimized LLVM IR wrapped in <code>...</code>.")
         parts.append("")
 
         return "\n".join(parts)
     
-    def refine_strategies(self, in_dir: str, ll_dir: str, out_dir: str, timeout: int = 30, verify_timeout: int = 4, max_files: int = 0, continue_on_error: bool = False, save_intermediate: bool = False):
+    def refine_strategies(self, in_dir: str, ll_dir: str, initial_dir: str, out_dir: str, timeout: int = 30, verify_timeout: int = 4, max_files: int = 0, continue_on_error: bool = False, save_intermediate: bool = False):
         in_dir = Path(in_dir)
         ll_dir = Path(ll_dir)
+        initial_dir = Path(initial_dir)
         opt_bin = self.OPT_BIN
 
         if not in_dir.is_dir():
-            raise SystemExit(f"--in_dir not a directory: {in_dir}")
+            raise SystemExit(f"in_dir not a directory: {in_dir}")
         if not ll_dir.is_dir():
-            raise SystemExit(f"--ll_dir not a directory: {ll_dir}")
+            raise SystemExit(f"ll_dir not a directory: {ll_dir}")
+        if not initial_dir.is_dir():
+            raise SystemExit(f"initial_dir not a directory: {initial_dir}")
         if not opt_bin.exists():
             raise SystemExit(f"--opt_bin not found: {opt_bin}")
 
@@ -410,7 +399,9 @@ class StrategyRefinement:
 
         for i, txt_path in enumerate(txt_files, start=1):
             prefix = self.txt_to_prefix(txt_path)
+            self.log(prefix)
             candidates = ll_index.get(prefix, [])
+            self.log(candidates)
             src_ll = self.choose_ll(prefix, candidates, ll_dir)
 
             out_prompt = out_dir / f"{prefix}.prompt.ll"
@@ -425,7 +416,7 @@ class StrategyRefinement:
                 out_prompt.write_text("", encoding="utf-8")
                 continue
 
-            ir, _ = self.extract_ir_and_advice(src_ll)
+            ir = src_ll.read_text(encoding="utf-8", errors="ignore")
             if not ir:
                 msg = f"ERROR: no <ir>...</ir> (or fallback <code>...</code>) found in {src_ll}"
                 self.log("  " + msg)
@@ -434,7 +425,7 @@ class StrategyRefinement:
                 out_prompt.write_text("", encoding="utf-8")
                 continue
 
-            advice = self.read_advice_from_in_dir(in_dir, prefix)
+            advice = self.read_advice_from_in_dir(initial_dir, prefix)
 
             raw_lines = self.read_pass_lines(txt_path)
             pipelines_ok, dropped, mode = self.select_pipelines(

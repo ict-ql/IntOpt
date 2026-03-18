@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from openai import OpenAI
 
 class LLM_Optimizer:
-    def __init__(self, base_url: str = "https://cloud.infini-ai.com/maas/v1", api_key: str = "sk-wa5ipdlq2zi2tmjt"):
+    def __init__(self, base_url: str, api_key: str):
         self.BASE_URL = base_url
         self.API_KEY = api_key
         self._tls = threading.local()

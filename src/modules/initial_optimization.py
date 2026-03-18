@@ -15,8 +15,7 @@ import pandas as pd
 
 # 定义Args类在模块级别，使其可以被pickle序列化
 class Args:
-    def __init__(self, label, data_path, out_dir, batch_size, gpus, save_all):
-        self.label = label
+    def __init__(self, data_path, out_dir, batch_size, gpus, save_all):
         self.data_path = data_path
         self.out_dir = out_dir
         self.batch_size = batch_size
@@ -76,14 +75,6 @@ class InitialOptimizationGenerator:
             torch.cuda.set_device(device)
             
             out_dir = Path(args.out_dir)
-            save_subdir_name = "all" if args.save_all else "wrong"
-            save_file_dir = out_dir / save_subdir_name
-            save_file_dir.mkdir(parents=True, exist_ok=True)
-
-            tsv_part_file = out_dir / f"temp_part_{rank}_{args.label}.tsv"
-            if not tsv_part_file.exists():
-                with open(tsv_part_file, "w", encoding="utf-8") as f:
-                    f.write("idx\tok\ttruth\tpred\n")
 
             print(f"[Worker-{rank}] Launching on GPU {gpu_id} | Data samples: {len(subset_indices)}")
 
@@ -159,11 +150,9 @@ class InitialOptimizationGenerator:
                     generated_tokens = output_ids[:, gen_input_len:]
                     batch_responses = tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
 
-                    tsv_lines = []
                     for j, response in enumerate(batch_responses):
                         global_idx = start + j
                         raw_idx = raw_indices[global_idx]
-
                         if tokenizer.eos_token in response:
                             clean_response = response.split(tokenizer.eos_token)[0]
                         else:
@@ -172,35 +161,19 @@ class InitialOptimizationGenerator:
                         pred_code = self.get_res(clean_response)
                         truth_code = raw_truths_code[global_idx]
                         
-                        is_ok = (pred_code.strip() == truth_code.strip())
-                        if is_ok:
-                            acc_count += 1
 
-                        if (not is_ok) or args.save_all:
-                            base_name = save_file_dir / f"{raw_idx}"
-                            
-                            with open(f"{base_name}.model.predict.ll", "w", encoding="utf-8") as f:
-                                f.write(clean_response)
-                            with open(f"{base_name}.truth.ll", "w", encoding="utf-8") as f:
-                                f.write(raw_full_texts[global_idx])
-                            with open(f"{base_name}.prompt.ll", "w", encoding="utf-8") as f:
-                                f.write(batch_prompts[j])
+                        base_name = out_dir / f"{data[raw_idx]['filename']}"
+                        
+                        with open(f"{base_name}.model.predict.ll", "w", encoding="utf-8") as f:
+                            f.write(clean_response)
+                        with open(f"{base_name}.truth.ll", "w", encoding="utf-8") as f:
+                            f.write(raw_full_texts[global_idx])
+                        with open(f"{base_name}.prompt.ll", "w", encoding="utf-8") as f:
+                            f.write(batch_prompts[j])
 
-                        clean_truth = raw_full_texts[global_idx].replace('\n', '\\n').replace('\t', '    ')
-                        clean_pred = clean_response.replace('\n', '\\n').replace('\t', '    ')
-                        ok_flag = "1" if is_ok else "0"
-                        tsv_lines.append(f"{raw_idx}\t{ok_flag}\t{clean_truth}\t{clean_pred}\n")
-                    
-                    with open(tsv_part_file, "a", encoding="utf-8") as f:
-                        for line in tsv_lines:
-                            f.write(line)
 
-                    processed_count += len(batch_responses)
-                    current_acc = acc_count / processed_count
-                    iterator.set_postfix(acc=f"{current_acc:.2%}")
-
-            print(f"[Worker-{rank}] Done. Final Acc: {acc_count}/{total_samples} = {acc_count/total_samples:.2%}")
-            return_dict[rank] = str(tsv_part_file)
+            print(f"[Worker-{rank}] Done.")
+            return_dict[rank] = str(out_dir)
 
         except Exception as e:
             print(f"[Worker-{rank}] Error: {e}")
@@ -208,16 +181,14 @@ class InitialOptimizationGenerator:
             traceback.print_exc()
             return_dict[rank] = None
     
-    def generate_optimization_strategies(self, data_path: str, out_dir: str, label: str, batch_size: int = 4, gpus: str = "0,1,2", save_all: bool = False):
+    def generate_optimization_strategies(self, data_path: str, out_dir: str, batch_size: int = 4, gpus: str = "0,1,2", save_all: bool = False):
         # 使用模块级别的Args类
-        args = Args(label, data_path, out_dir, batch_size, gpus, save_all)
+        args = Args(data_path, out_dir, batch_size, gpus, save_all)
         mp.set_start_method('spawn', force=True)
         
         gpu_list = [int(x) for x in args.gpus.split(",")]
         
         out_dir = self.ensure_dir(args.out_dir)
-        sub_dir = out_dir / ("all" if args.save_all else "wrong")
-        sub_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"[INFO] Output Dir : {out_dir}")
         print(f"[INFO] Strategy   : Strict 8192 length + EOS Cleaning")
@@ -238,27 +209,20 @@ class InitialOptimizationGenerator:
                         content = f.read()
                     # 构建prompt格式，参考原始数据集的结构
                     prompt = f"[INST]Given the following LLVM IR, propose key optimization transformation steps to outperform LLVM -O3.\nWrite your answer inside a single <code>...</code> block.\nInside <code>, write ONLY <step></step> blocks.\nEach step MUST follow this format:\n<step>\n**Transformation**: [Brief name of the optimization]\n**Change**: [A short description of the change applied to the code]\n</step>\nDo NOT output optimized IR.\n\n<ir>{content}</ir>[/INST]\n"
-                    dataset_data.append({"prompt": prompt})
+                    # 保存原始文件名
+                    filename = ir_file.stem
+                    dataset_data.append({"prompt": prompt, "filename": filename})
                 
                 total_samples = len(dataset_data)
                 print(f"[INFO] Total samples: {total_samples}")
             else:
-                # 如果目录中没有IR文件，尝试作为预格式化数据集加载
-                try:
-                    full_dataset = datasets.load_from_disk(args.data_path)
-                    dataset_data = [item['prompt'] for item in full_dataset]
-                    total_samples = len(dataset_data)
-                    print(f"[INFO] Loaded pre-formatted dataset with {total_samples} samples")
-                except Exception as e:
-                    print(f"[ERROR] Failed to load dataset: {e}")
-                    raise
+                msg = f"[ERROR] There is no IR files in `{data_path_obj}`"
+                print(msg)
+                raise SystemExit(msg)
         else:
-            # 尝试作为预格式化数据集加载
-            full_dataset = datasets.load_from_disk(args.data_path)
-            dataset_data = [item for item in full_dataset]
-            total_samples = len(dataset_data)
-            print(f"[INFO] Total samples: {total_samples}")
-
+            msg = f"[ERROR] `{data_path_obj}` is not a directory."
+            print(msg)
+            raise SystemExit(msg)
         indices = list(range(total_samples))
         chunk_size = math.ceil(total_samples / len(gpu_list))
         chunks = [indices[i:i + chunk_size] for i in range(0, total_samples, chunk_size)]
@@ -266,11 +230,6 @@ class InitialOptimizationGenerator:
         manager = mp.Manager()
         return_dict = manager.dict()
         processes = []
-        
-        for rank in range(len(gpu_list)):
-            temp_f = out_dir / f"temp_part_{rank}_{args.label}.tsv"
-            if temp_f.exists():
-                os.remove(temp_f)
 
         start_time = time.time()
         for rank, gpu_id in enumerate(gpu_list):
@@ -287,32 +246,5 @@ class InitialOptimizationGenerator:
             p.join()
             
         print(f"[INFO] Finished in {time.time() - start_time:.2f}s")
-
-        all_dfs = []
-        temp_files = []
-        for rank in range(len(processes)):
-            fpath = return_dict.get(rank)
-            if fpath and os.path.exists(fpath):
-                try:
-                    all_dfs.append(pd.read_csv(fpath, sep='\t'))
-                    temp_files.append(fpath)
-                except:
-                    pass
-        
-        if all_dfs:
-            final_df = pd.concat(all_dfs).sort_values("idx")
-            final_out = out_dir / f"pred_{args.label}.tsv"
-            final_df.to_csv(final_out, sep='\t', index=False)
-            
-            acc_rate = final_df['ok'].mean()
-            print(f"\n[SUCCESS] Final Accuracy: {acc_rate:.2%}")
-            
-            for f in temp_files:
-                try:
-                    os.remove(f)
-                except:
-                    pass
-        else:
-            print("[ERROR] No results generated.")
         
         return out_dir

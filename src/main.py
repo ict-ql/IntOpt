@@ -2,6 +2,7 @@ import argparse
 import os
 import yaml
 import shutil
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -83,19 +84,15 @@ class IR_Optimizer:
         temp_dir = output_path / "temp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         
-        # 步骤2: 复制输入文件到临时目录
-        temp_input = temp_dir / "input.ll"
-        shutil.copy2(input_file, temp_input)
-        
-        # 步骤3: 创建临时数据集结构（包含IR文件）
+        # 步骤2: 创建临时数据集结构（包含IR文件）
         dataset_dir = temp_dir / "dataset"
         dataset_dir.mkdir(parents=True, exist_ok=True)
         
         # 将输入IR文件复制到临时数据集目录
         temp_input_in_dataset = dataset_dir / f"{input_path.name}"
-        shutil.copy2(temp_input, temp_input_in_dataset)
+        shutil.copy2(input_file, temp_input_in_dataset)
         
-        # 步骤4: 生成初始优化策略
+        # 步骤3: 生成初始优化策略
         print("Step 1: Initial optimization strategy generation")
         initial_out_dir = temp_dir / "step1_initial"
         
@@ -103,62 +100,79 @@ class IR_Optimizer:
         initial_out_dir = self.initial_optimizer.generate_optimization_strategies(
             data_path=str(dataset_dir),
             out_dir=str(initial_out_dir),
-            label="icml-13b-ftd-step-5k-4000-final",
-            batch_size=1,
+            batch_size=1, # because just single file
             gpus=self.config.gpus,
             save_all=False
         )
         
-        # 步骤5: 优化策略映射
+        # 步骤4: 优化策略映射
         print("\nStep 2: Strategy mapping")
         mapping_out_dir = temp_dir / "step2_mapping"
         
         # 调用策略映射模块
         mapping_out_dir = self.strategy_mapper.map_strategies_to_passes(
-            in_dir=os.path.join(initial_out_dir, "wrong"),
+            in_dir=str(initial_out_dir),
             out_dir=str(mapping_out_dir),
             topk=3,
             emit="tokens"
         )
         
-        # 步骤6: 优化策略精化
+        # 步骤5: 优化策略精化
         print("\nStep 3: Strategy refinement")
         refinement_out_dir = temp_dir / "step3_refinement"
         
         # 调用策略精化模块
         refinement_out_dir = self.strategy_refiner.refine_strategies(
             in_dir=mapping_out_dir,
-            ll_dir=self.config.ll_dir,
+            ll_dir=dataset_dir,
+            initial_dir=initial_out_dir,
             out_dir=str(refinement_out_dir),
-            timeout=30,
-            verify_timeout=4
+            timeout=self.config.timeout,
+            verify_timeout=self.config.verify_timeout
         )
         
-        # 步骤7: LLM调用优化
+        #调用LLM实现strategy refinement
+        refinement_out_dir = self.llm_optimizer.optimize_with_llm(
+            in_dir=refinement_out_dir,
+            out_dir=str(refinement_out_dir),
+            model=self.config.llm_model,
+            api_mode=self.config.api_mode,
+            workers=1
+        )
+
+        # 步骤6: LLM调用优化
         print("\nStep 4: LLM optimization")
-        llm_out_dir = temp_dir / "step4_llm"
+        llm_out_dir = temp_dir / "step4_realization"
+        llm_out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 实现prompt生成功能
+        llm_out_dir = self.generate_optimized_prompt(refinement_out_dir, llm_out_dir)
         
         # 调用LLM优化模块
         llm_out_dir = self.llm_optimizer.optimize_with_llm(
-            in_dir=refinement_out_dir,
+            in_dir=llm_out_dir,
             out_dir=str(llm_out_dir),
-            model="gpt-5",
-            api_mode="auto",
+            model=self.config.llm_model,
+            api_mode=self.config.api_mode,
             workers=1
         )
         
-        # 步骤8: 处理优化结果
-        output_file = output_path / f"{input_path.stem}.optimized.ll"
+        # 后处理一下
+
+        # 步骤7: 处理优化结果
         
-        # 查找优化后的文件并复制到输出目录
-        optimized_files = list(llm_out_dir.glob("*.ll")) if isinstance(llm_out_dir, Path) else list(Path(llm_out_dir).glob("*.ll"))
-        if optimized_files:
-            shutil.copy2(optimized_files[0], output_file)
-        else:
-            # 如果没有生成优化文件，复制原始文件
-            shutil.copy2(temp_input, output_file)
+        # output_file = output_path / f"{input_path.stem}.optimized.ll"
         
-        print(f"Optimization completed. Output file: {output_file}")
+        # # 查找优化后的文件并复制到输出目录
+
+        # optimized_files = list(llm_out_dir.glob("*.ll")) if isinstance(llm_out_dir, Path) else list(Path(llm_out_dir).glob("*.ll"))
+        # if optimized_files:
+        #     shutil.copy2(optimized_files[0], output_file)
+        # else:
+        #     # 如果没有生成优化文件，复制原始文件
+        #     shutil.copy2(temp_input, output_file)
+        
+        # print(f"Optimization completed. Output file: {output_file}")
         
         return output_path
     
@@ -184,6 +198,7 @@ class IR_Optimizer:
             emit="tokens"
         )
         
+        # @TODO: 记得改，这个也都对不上
         # 步骤3: 优化策略精化
         print("\nStep 3: Strategy refinement")
         refinement_out_dir = self.strategy_refiner.refine_strategies(
@@ -206,6 +221,76 @@ class IR_Optimizer:
         
         return llm_out_dir
     
+    def _unescape_html(self, s: str) -> str:
+        HTML_UNESCAPE = (
+            ("&lt;", "<"),
+            ("&gt;", ">"),
+            ("&amp;", "&"),
+        )
+        for a, b in HTML_UNESCAPE:
+            s = s.replace(a, b)
+        return s
+
+    def _clean_block(self, s: str) -> str:
+        s = self._unescape_html(s or "")
+        s = s.strip("\n\r\t ")
+        return s
+
+    def get_advice(self, text):
+        code_blocks: List[str] = []
+        ADVICE_RE = re.compile(r"<advice>(.*?)</advice>", re.DOTALL | re.IGNORECASE)
+        for m in ADVICE_RE.finditer(text):
+            blk = self._clean_block(m.group(1))
+            # Filter out the common placeholder caught from "single <code>...</code> block"
+            if blk == "..." or not blk:
+                continue
+            code_blocks.append(blk)
+        if len(code_blocks) == 0:
+            return None
+        assert (len(code_blocks) == 1)
+        return code_blocks[0]
+
+    def generate_optimized_prompt(self, refinement_out_dir, llm_out_dir):
+        advice_info_old_header = "You may refer to the following advice, but feel free to adapt, extend, or deviate from it as you see fit."
+        advice_info_new_header = "You can refer to the following advice."
+        old_footer = "Please output the final optimization advice wrapped in <advice>...</advice> and the full optimized LLVM IR wrapped in <code>...</code>."
+        new_footer = "Please output the full optimized LLVM IR wrapped in <code>...</code>."
+
+
+        """生成优化后的prompt"""
+        import re
+        
+        # 步骤1: 提取advice内容
+        print("Create optimization prompt...")
+        
+        # 查找所有*.prompt.ll文件
+        prompt_files = list(Path(refinement_out_dir).glob("*.prompt.ll"))
+        for file in prompt_files:
+            model_pred_name = file.stem[:-len(".prompt")]
+            if not Path(f"{file.parent}/{model_pred_name}.model.predict.ll").is_file():
+                print(f"[WARN] There is no refined strategy in {file.parent} for {model_pred_name}")
+                continue
+            with open(f"{file.parent}/{model_pred_name}.model.predict.ll", "r") as f:
+                ctx = f.read()
+                new_advice = self.get_advice(ctx)
+            with open(file, "r") as f:
+                ctx = f.read()
+                old_advice = self.get_advice(ctx)
+                if old_advice == None:
+                    ctx = ctx.replace("</code>\n", f"</code>\n\n{advice_info_new_header}\n<advice>\n{new_advice}\n</advice>\n")
+                    # print(ctx)
+                else:
+                    ctx = ctx.replace(old_advice, new_advice)
+                ctx = ctx.replace(advice_info_old_header, advice_info_new_header)
+                ctx = ctx.replace(old_footer, new_footer)
+            # 保存新prompt到输出目录
+            output_prompt_file = f"{llm_out_dir}/{model_pred_name}.prompt.ll"
+            with open(output_prompt_file, "w") as f:
+                f.write(ctx)
+
+        print(f"New prompt saved to: {llm_out_dir}")
+        return llm_out_dir
+
     def run(self, input_path: str, output_dir: str, mode: str):
         """运行优化流程"""
         if mode == "single":
