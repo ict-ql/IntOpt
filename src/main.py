@@ -186,48 +186,88 @@ class IR_Optimizer:
     
     def optimize_batch(self, data_path: str, output_dir: str):
         """批量优化LLVM IR文件"""
+        in_file_num = sum(1 for _ in Path(data_path).glob("*.ll"))
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
         # 步骤1: 初始优化策略生成
         print("Step 1: Initial optimization strategy generation")
         initial_out_dir = self.initial_optimizer.generate_optimization_strategies(
             data_path=data_path,
             out_dir=os.path.join(output_dir, "step1_initial"),
-            label="icml-13b-ftd-step-5k-4000-final",
-            batch_size=self.config.batch_size,
+            batch_size=min(self.config.batch_size, in_file_num),
             gpus=self.config.gpus,
             save_all=False
         )
-        
+
         # 步骤2: 优化策略映射
         print("\nStep 2: Strategy mapping")
         mapping_out_dir = self.strategy_mapper.map_strategies_to_passes(
-            in_dir=os.path.join(initial_out_dir, "wrong"),
+            in_dir=str(initial_out_dir),
             out_dir=os.path.join(output_dir, "step2_mapping"),
             topk=3,
             emit="tokens"
         )
-        
-        # @TODO: 记得改，这个也都对不上
+
         # 步骤3: 优化策略精化
         print("\nStep 3: Strategy refinement")
         refinement_out_dir = self.strategy_refiner.refine_strategies(
             in_dir=mapping_out_dir,
-            ll_dir=self.config.ll_dir,
+            ll_dir=data_path,
+            initial_dir=initial_out_dir,
             out_dir=os.path.join(output_dir, "step3_refinement"),
-            timeout=30,
-            verify_timeout=4
+            timeout=self.config.timeout,
+            verify_timeout=self.config.verify_timeout
         )
-        
+
+        # 调用LLM实现strategy refinement
+        refinement_out_dir = self.llm_optimizer.optimize_with_llm(
+            in_dir=refinement_out_dir,
+            out_dir=str(refinement_out_dir),
+            model=self.config.llm_model,
+            api_mode=self.config.api_mode,
+            workers=min(self.config.workers, in_file_num)
+        )
+
         # 步骤4: LLM调用优化
         print("\nStep 4: LLM optimization")
+        llm_out_dir = os.path.join(output_dir, "step4_realization")
+        os.makedirs(llm_out_dir, exist_ok=True)
+
+        # 生成优化后的prompt
+        llm_out_dir = self.generate_optimized_prompt(refinement_out_dir, llm_out_dir)
+
+        # 调用LLM优化模块
         llm_out_dir = self.llm_optimizer.optimize_with_llm(
-            in_dir=refinement_out_dir,
-            out_dir=os.path.join(output_dir, "step4_llm"),
-            model="gpt-5",
-            api_mode="auto",
-            workers=50
+            in_dir=llm_out_dir,
+            out_dir=str(llm_out_dir),
+            model=self.config.llm_model,
+            api_mode=self.config.api_mode,
+            workers=min(self.config.workers, in_file_num)
         )
-        
-        return llm_out_dir
+
+        # 步骤5: 后处理
+        print("\nStep 5: Post processing")
+        llm_out_dir = self.post_processor.post_process(
+            in_dir=str(llm_out_dir)
+        )
+
+        # 步骤7: 处理优化结果
+        optimized_files = Path(llm_out_dir).glob("*.model.predict.ll")
+        if optimized_files:
+            for opt_f in optimized_files:
+                output_file = Path(output_dir) / f"{opt_f.stem}.ll"
+                with open(opt_f, "r", encoding="utf-8") as f:
+                    code = f.read()
+
+                code = self.get_code(code)
+                with open(output_file, "w", encoding="utf-8") as f:
+                    f.write(code)
+
+            print(f"Optimization completed. Output dir: {output_dir}")
+            return output_dir
+        else:
+            print(f"[WARN]: There is no optimized IR file for {data_path}")
+            return None
     
     def _unescape_html(self, s: str) -> str:
         HTML_UNESCAPE = (
