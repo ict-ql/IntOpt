@@ -10,6 +10,7 @@ from modules.initial_optimization import InitialOptimizationGenerator
 from modules.strategy_mapping import StrategyMapping
 from modules.strategy_refinement import StrategyRefinement
 from modules.llm_optimization import LLM_Optimizer
+from modules.post_processing import PostProcessor
 
 class Config:
     def __init__(self, config_file=None, **kwargs):
@@ -67,6 +68,7 @@ class IR_Optimizer:
             base_url=config.base_url,
             api_key=config.api_key
         )
+        self.post_processor = PostProcessor()
     
     def optimize_single_file(self, input_file: str, output_dir: str):
         """优化单个LLVM IR文件"""
@@ -158,23 +160,29 @@ class IR_Optimizer:
         )
         
         # 后处理一下
+        print("\nStep 5: Post processing")
+        llm_out_dir = self.post_processor.post_process(
+            in_dir=str(llm_out_dir)
+        )
 
         # 步骤7: 处理优化结果
-        
-        # output_file = output_path / f"{input_path.stem}.optimized.ll"
-        
-        # # 查找优化后的文件并复制到输出目录
+        output_file = output_path / f"{input_path.stem}.optimized.ll"
+        # 查找优化后的文件并复制到输出目录
+        optimized_files = Path(llm_out_dir).glob("*.model.predict.ll")
+        if optimized_files:
+            first_file = next(optimized_files)
+            with open(first_file, "r", encoding="utf-8") as f:
+                code = f.read()
 
-        # optimized_files = list(llm_out_dir.glob("*.ll")) if isinstance(llm_out_dir, Path) else list(Path(llm_out_dir).glob("*.ll"))
-        # if optimized_files:
-        #     shutil.copy2(optimized_files[0], output_file)
-        # else:
-        #     # 如果没有生成优化文件，复制原始文件
-        #     shutil.copy2(temp_input, output_file)
-        
-        # print(f"Optimization completed. Output file: {output_file}")
-        
-        return output_path
+            code = self.get_code(code)
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(code)
+
+            print(f"Optimization completed. Output file: {output_file}")
+            return output_path
+        else:
+            print(f"[WARN]: There is no optimized IR file for {input_path}")
+            return None
     
     def optimize_batch(self, data_path: str, output_dir: str):
         """批量优化LLVM IR文件"""
@@ -239,6 +247,20 @@ class IR_Optimizer:
     def get_advice(self, text):
         code_blocks: List[str] = []
         ADVICE_RE = re.compile(r"<advice>(.*?)</advice>", re.DOTALL | re.IGNORECASE)
+        for m in ADVICE_RE.finditer(text):
+            blk = self._clean_block(m.group(1))
+            # Filter out the common placeholder caught from "single <code>...</code> block"
+            if blk == "..." or not blk:
+                continue
+            code_blocks.append(blk)
+        if len(code_blocks) == 0:
+            return None
+        assert (len(code_blocks) == 1)
+        return code_blocks[0]
+    
+    def get_code(self, text):
+        code_blocks: List[str] = []
+        ADVICE_RE = re.compile(r"<code>(.*?)</code>", re.DOTALL | re.IGNORECASE)
         for m in ADVICE_RE.finditer(text):
             blk = self._clean_block(m.group(1))
             # Filter out the common placeholder caught from "single <code>...</code> block"
@@ -338,9 +360,9 @@ def main():
     
     optimizer = IR_Optimizer(config)
     result_dir = optimizer.run(args.input, args.output, args.mode)
-    
-    print(f"\nOptimization completed successfully!")
-    print(f"Result directory: {result_dir}")
+    if result_dir != None:
+        print(f"\nOptimization completed successfully!")
+        print(f"Result directory: {result_dir}")
 
 if __name__ == "__main__":
     main()
