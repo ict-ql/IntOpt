@@ -1,49 +1,43 @@
-import argparse
-import random
-import threading
-import time
-from pathlib import Path
-from typing import Optional, Tuple, List
-import re
-from typing import Dict, Set
-import html
+"""Post-process LLM-generated IR: normalise markdown fences, strip
+redundant IR attributes, eliminate trivial bitcasts and SSA copies."""
 
-def delete_redundant_info(ctx):
-    ctx = ctx.replace("dso_local local_unnamed_addr", "dso_local")
-    return ctx
+import html
+import re
+from pathlib import Path
+from typing import Dict, Set
+
+from modules.utils import log
+
+# ---------------------------------------------------------------------------
+# SSA rewrite engine
+# ---------------------------------------------------------------------------
 
 _SSA_TOKEN_BOUNDARY = r"[A-Za-z0-9$._-]"
 
+
 def _resolve_chains(repl: Dict[str, str]) -> Dict[str, str]:
-    """Collapse chains: %a->%b, %b->%c => %a->%c (cycle-safe)."""
-    def resolve(v: str) -> str:
-        seen = set()
+    """Collapse chains: %a->%b, %b->%c  =>  %a->%c  (cycle-safe)."""
+    def _resolve(v: str) -> str:
+        seen: Set[str] = set()
         while v in repl and v not in seen:
             seen.add(v)
             v = repl[v]
         return v
-    return {k: resolve(v) for k, v in repl.items()}
+    return {k: _resolve(v) for k, v in repl.items()}
+
 
 def _token_sub(line: str, lhs: str, rhs: str) -> str:
-    """Replace SSA name lhs with rhs only when lhs is a whole token."""
-    pat = re.compile(rf"(?<!{_SSA_TOKEN_BOUNDARY}){re.escape(lhs)}(?!{_SSA_TOKEN_BOUNDARY})")
+    pat = re.compile(
+        rf"(?<!{_SSA_TOKEN_BOUNDARY}){re.escape(lhs)}(?!{_SSA_TOKEN_BOUNDARY})"
+    )
     return pat.sub(rhs, line)
 
-def apply_rewrites(ir_text: str, repl: Dict[str, str], delete_idx: Set[int]) -> str:
-    """
-    Apply SSA renames and delete selected lines.
-    - repl: mapping like {'%a':'%b'}
-    - delete_idx: line indices to delete (0-based)
-    """
+
+def _apply_rewrites(ir_text: str, repl: Dict[str, str], delete_idx: Set[int]) -> str:
     if not repl and not delete_idx:
         return ir_text
-
     lines = ir_text.splitlines(keepends=True)
-
-    # Collapse chains for stable rewriting
     repl = _resolve_chains(repl)
-
-    # Substitute uses (skip lines that will be deleted)
     if repl:
         for i, line in enumerate(lines):
             if i in delete_idx:
@@ -51,129 +45,104 @@ def apply_rewrites(ir_text: str, repl: Dict[str, str], delete_idx: Set[int]) -> 
             for lhs, rhs in repl.items():
                 line = _token_sub(line, lhs, rhs)
             lines[i] = line
-
-    # Drop deleted lines
     return "".join(line for i, line in enumerate(lines) if i not in delete_idx)
 
-# Match: %lhs = bitcast <ptr-like> %src to <ptr-like>
-# ptr-like includes: "ptr", "ptr i8", "ptr addrspace(1)", "ptr addrspace(1) i8", etc.
-_BITCAST_PTRLIKE_PTRLIKE_RE = re.compile(
-    r"""(?mx) ^
-    \s*(?P<lhs>%[-a-zA-Z$._0-9]+)\s*=\s*bitcast
-    \s+(?P<src_ptr>ptr(?:\s+addrspace\(\d+\))?(?:\s+[^,%\n]+)?)  # allow multi-token types like "<4 x float>"
-    \s+(?P<src>%[-a-zA-Z$._0-9]+)
-    \s+to\s+(?P<dst_ptr>ptr(?:\s+addrspace\(\d+\))?(?:\s+[^,\n]+)?)  # allow multi-token types
-    \s*(?:,.*)?$
-    """
+
+# ---------------------------------------------------------------------------
+# Individual transforms
+# ---------------------------------------------------------------------------
+
+def _delete_redundant_info(ctx: str) -> str:
+    return ctx.replace("dso_local local_unnamed_addr", "dso_local")
+
+
+_LLVM_FENCE_RE = re.compile(
+    r"```llvm[ \t]*\r?\n(.*?)\r?\n```[ \t]*", flags=re.DOTALL,
 )
 
-_COPY_ASSIGN_RE = re.compile(
+def _replace_llvm_fences(md: str) -> str:
+    """Convert ```llvm ... ``` markdown fences to <code>…</code> tags."""
+    def _repl(m: re.Match) -> str:
+        return f"<code>{html.escape(m.group(1), quote=False)}</code>"
+    return _LLVM_FENCE_RE.sub(_repl, md)
+
+
+_BITCAST_RE = re.compile(
     r"""(?mx) ^
-    \s*(?P<lhs>%[-a-zA-Z$._0-9]+)\s*=\s*(?P<rhs>%[-a-zA-Z$._0-9]+)
-    \s*(?:,.*)?$
-    """
+    \s*(?P<lhs>%[-a-zA-Z$._0-9]+)\s*=\s*bitcast
+    \s+(?P<src_ptr>ptr(?:\s+addrspace\(\d+\))?(?:\s+[^,%\n]+)?)
+    \s+(?P<src>%[-a-zA-Z$._0-9]+)
+    \s+to\s+(?P<dst_ptr>ptr(?:\s+addrspace\(\d+\))?(?:\s+[^,\n]+)?)
+    \s*(?:,.*)?$"""
 )
 
 _ADDRSPACE_RE = re.compile(r"addrspace\((\d+)\)")
-
-
-LLVM_FENCE_RE = re.compile(
-    r"```llvm[ \t]*\r?\n"      # opening fence: ```llvm + optional spaces + newline
-    r"(.*?)"                   # code content (non-greedy)
-    r"\r?\n```[ \t]*",         # closing fence: newline + ```
-    flags=re.DOTALL
-)
-
-def replace_llvm_fences(md: str) -> str:
-    def repl(m: re.Match) -> str:
-        code = m.group(1)
-        code_escaped = html.escape(code, quote=False)
-        return f"<code>{code_escaped}</code>"
-    return LLVM_FENCE_RE.sub(repl, md)
 
 def _addrspace_of(ptr_like: str) -> str:
     m = _ADDRSPACE_RE.search(ptr_like)
     return m.group(1) if m else ""
 
-def delete_bitcast(ir_text: str) -> str:
-    """
-    Eliminate pointer-to-pointer bitcasts by SSA renaming + deleting the bitcast line.
 
-    Examples:
-      %a = bitcast ptr %b to ptr i8
-      %vecp = bitcast ptr %0 to ptr <4 x float>
-
-    Conservative rule:
-    - Only eliminate when addrspace matches (both none, or same number).
-    """
+def _delete_bitcast(ir_text: str) -> str:
+    """Eliminate ptr-to-ptr bitcasts (same addrspace) via SSA rename."""
     lines = ir_text.splitlines(keepends=True)
-
     repl: Dict[str, str] = {}
     delete_idx: Set[int] = set()
-
     for i, line in enumerate(lines):
-        m = _BITCAST_PTRLIKE_PTRLIKE_RE.match(line)
+        m = _BITCAST_RE.match(line)
         if not m:
             continue
-        lhs = m.group("lhs")
-        src = m.group("src")
-        src_ptr = m.group("src_ptr")
-        dst_ptr = m.group("dst_ptr")
-
-        if _addrspace_of(src_ptr) != _addrspace_of(dst_ptr):
+        if _addrspace_of(m.group("src_ptr")) != _addrspace_of(m.group("dst_ptr")):
             continue
-
-        repl[lhs] = src
+        repl[m.group("lhs")] = m.group("src")
         delete_idx.add(i)
+    return _apply_rewrites("".join(lines), repl, delete_idx)
 
-    return apply_rewrites("".join(lines), repl, delete_idx)
 
-def delete_ssa_copies(ir_text: str) -> str:
-    """
-    Eliminate pseudo-IR SSA copy lines like:
-      %cnt.next = %cnt.sel
-    by replacing uses of %cnt.next with %cnt.sel and removing the line.
-    """
+_COPY_RE = re.compile(
+    r"""(?mx) ^
+    \s*(?P<lhs>%[-a-zA-Z$._0-9]+)\s*=\s*(?P<rhs>%[-a-zA-Z$._0-9]+)
+    \s*(?:,.*)?$"""
+)
+
+def _delete_ssa_copies(ir_text: str) -> str:
+    """Eliminate trivial SSA copies like  %a = %b."""
     lines = ir_text.splitlines(keepends=True)
-
     repl: Dict[str, str] = {}
     delete_idx: Set[int] = set()
-
     for i, line in enumerate(lines):
-        m = _COPY_ASSIGN_RE.match(line)
+        m = _COPY_RE.match(line)
         if not m:
             continue
-        lhs = m.group("lhs")
-        rhs = m.group("rhs")
+        lhs, rhs = m.group("lhs"), m.group("rhs")
         if lhs == rhs:
             delete_idx.add(i)
-            continue
-        repl[lhs] = rhs
-        delete_idx.add(i)
+        else:
+            repl[lhs] = rhs
+            delete_idx.add(i)
+    return _apply_rewrites("".join(lines), repl, delete_idx)
 
-    return apply_rewrites("".join(lines), repl, delete_idx)
 
+# ---------------------------------------------------------------------------
+# Public class
+# ---------------------------------------------------------------------------
 
 class PostProcessor:
-    def __init__(self):
-        pass
+    """Apply IR-level cleanups to *.model.predict.ll files in-place."""
 
-    def post_process(self, in_dir: str) -> str:
-        """对LLM生成的*.model.predict.ll文件进行后处理（原地修改）"""
-        in_dir = Path(in_dir)
-        model_pred_ll_files = sorted(in_dir.rglob("*.model.predict.ll"))
-        print(f"[PostProcess] process files: {len(model_pred_ll_files)}")
+    def run(self, in_dir: str) -> str:
+        """Process all prediction files under *in_dir*.  Returns the directory."""
+        in_dir_p = Path(in_dir)
+        files = sorted(in_dir_p.rglob("*.model.predict.ll"))
+        log(f"[PostProcess] {len(files)} files to process")
 
-        for ll_file in model_pred_ll_files:
-            with open(ll_file, "r") as f:
-                ctx = f.read()
-            ctx = replace_llvm_fences(ctx)
-            ctx = delete_redundant_info(ctx)
-            ctx = delete_bitcast(ctx)
-            ctx = delete_ssa_copies(ctx)
+        for f in files:
+            ctx = f.read_text(encoding="utf-8")
+            ctx = _replace_llvm_fences(ctx)
+            ctx = _delete_redundant_info(ctx)
+            ctx = _delete_bitcast(ctx)
+            ctx = _delete_ssa_copies(ctx)
+            f.write_text(ctx, encoding="utf-8")
 
-            with open(ll_file, "w") as f:
-                f.write(ctx)
-
-        print(f"[PostProcess] Done. Output: {in_dir}")
-        return str(in_dir)
+        log(f"[PostProcess] Done. Output: {in_dir_p}")
+        return str(in_dir_p)

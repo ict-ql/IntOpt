@@ -1,360 +1,305 @@
+"""LLVM IR optimisation pipeline — orchestrates strategy generation,
+mapping, refinement, LLM-based rewriting, and post-processing."""
+
 import argparse
 import os
-import yaml
 import shutil
-import re
+import yaml
 from pathlib import Path
-from typing import Optional
 
-from modules.initial_optimization import InitialOptimizationGenerator
+from modules.strategy_generator import StrategyGenerator
 from modules.strategy_mapping import StrategyMapping
 from modules.strategy_refinement import StrategyRefinement
-from modules.llm_optimization import LLM_Optimizer
+from modules.llm_client import LLMClient
 from modules.post_processing import PostProcessor
+from modules.utils import extract_single_block, log
+
+
+# ======================================================================
+# Configuration
+# ======================================================================
 
 class Config:
-    def __init__(self, config_file=None, **kwargs):
-        # 加载默认配置
-        default_config = {
-            'model_path': "/home/amax/wzh/Models/llm-compiler-13b-ftd",
-            'adapter_path': "/home/amax/yangz/Projects/2025-IR-Optset-Plus/05-Checkpoints/ICML/icml-13b-ftd-step-5k-4000-final",
-            'passregistry_def': "/home/amax/yangz/Env/llvm-project/llvm/lib/Passes/PassRegistry.def",
-            'llvm_lib_root': "/home/amax/yangz/Env/llvm-project/llvm/lib",
-            'opt_bin': "/home/amax/yangz/Env/llvm-project/build/bin/opt",
-            'll_dir': "/home/amax/yangz/Projects/2025-IR-Dataset/ICML/qiu-extend-5k",
-            'base_url': "https://cloud.infini-ai.com/maas/v1",
-            'api_key': "sk-wa5ipdlq2zi2tmjt",
-            'batch_size': 4,
-            'gpus': "0,1,2"
-        }
-        
-        # 从配置文件加载
-        if config_file and os.path.exists(config_file):
-            with open(config_file, 'r') as f:
-                yaml_config = yaml.safe_load(f)
-            # 合并配置
-            if 'model' in yaml_config:
-                default_config.update(yaml_config['model'])
-            if 'llvm' in yaml_config:
-                default_config.update(yaml_config['llvm'])
-            if 'llm' in yaml_config:
-                default_config.update(yaml_config['llm'])
-            if 'run' in yaml_config:
-                default_config.update(yaml_config['run'])
-        
-        # 从命令行参数覆盖
-        default_config.update(kwargs)
-        
-        # 设置属性
-        for key, value in default_config.items():
-            setattr(self, key, value)
+    """Merge defaults ← YAML file ← CLI overrides into a flat namespace."""
 
-class IR_Optimizer:
-    def __init__(self, config):
+    _DEFAULTS = {
+        "model_path": "/home/amax/wzh/Models/llm-compiler-13b-ftd",
+        "adapter_path": "/home/amax/yangz/Projects/2025-IR-Optset-Plus/"
+                        "05-Checkpoints/ICML/icml-13b-ftd-step-5k-4000-final",
+        "passregistry_def": "/home/amax/yangz/Env/llvm-project/llvm/lib/"
+                            "Passes/PassRegistry.def",
+        "llvm_lib_root": "/home/amax/yangz/Env/llvm-project/llvm/lib",
+        "opt_bin": "/home/amax/yangz/Env/llvm-project/build/bin/opt",
+        "ll_dir": "/home/amax/yangz/Projects/2025-IR-Dataset/ICML/"
+                  "qiu-extend-5k",
+        "base_url": "https://cloud.infini-ai.com/maas/v1",
+        "api_key": "sk-wa5ipdlq2zi2tmjt",
+        "batch_size": 4,
+        "gpus": "0,1,2",
+    }
+
+    _YAML_SECTIONS = ("model", "llvm", "llm", "run")
+
+    def __init__(self, config_file=None, **kwargs):
+        cfg = dict(self._DEFAULTS)
+        if config_file and os.path.exists(config_file):
+            with open(config_file, "r") as f:
+                y = yaml.safe_load(f) or {}
+            for sec in self._YAML_SECTIONS:
+                if sec in y:
+                    cfg.update(y[sec])
+        cfg.update(kwargs)
+        for k, v in cfg.items():
+            setattr(self, k, v)
+
+
+# ======================================================================
+# Pipeline orchestrator
+# ======================================================================
+
+class IROptimizer:
+    def __init__(self, config: Config):
         self.config = config
-        self.initial_optimizer = InitialOptimizationGenerator(
+        self.strategy_gen = StrategyGenerator(
             model_path=config.model_path,
-            adapter_path=config.adapter_path
+            adapter_path=config.adapter_path,
         )
-        self.strategy_mapper = StrategyMapping(
+        self.strategy_map = StrategyMapping(
             passregistry_def=config.passregistry_def,
             llvm_lib_root=config.llvm_lib_root,
-            opt_bin=config.opt_bin
+            opt_bin=config.opt_bin,
         )
-        self.strategy_refiner = StrategyRefinement(
-            opt_bin=config.opt_bin
-        )
-        self.llm_optimizer = LLM_Optimizer(
-            base_url=config.base_url,
-            api_key=config.api_key
-        )
-        self.post_processor = PostProcessor()
-    
+        self.strategy_refine = StrategyRefinement(opt_bin=config.opt_bin)
+        self.llm = LLMClient(base_url=config.base_url, api_key=config.api_key)
+        self.post_proc = PostProcessor()
+
+    # ------------------------------------------------------------------
+    # Prompt rewriting (inject refined advice into the realization prompt)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rewrite_prompts(refinement_dir, out_dir) -> str:
+        """Replace old advice in prompts with the LLM-refined advice,
+        and switch the footer to request only <code> output."""
+
+        OLD_HEADER = ("You may refer to the following advice, but feel free "
+                      "to adapt, extend, or deviate from it as you see fit.")
+        NEW_HEADER = "You can refer to the following advice."
+        OLD_FOOTER = ("Please output the final optimization advice wrapped in "
+                      "<advice>...</advice> and the full optimized LLVM IR "
+                      "wrapped in <code>...</code>.")
+        NEW_FOOTER = ("Please output the full optimized LLVM IR wrapped in "
+                      "<code>...</code>.")
+
+        log("Rewriting prompts for final LLM pass ...")
+        refinement_dir = Path(refinement_dir)
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for prompt_file in refinement_dir.glob("*.prompt.ll"):
+            prefix = prompt_file.stem[: -len(".prompt")]
+            pred_file = prompt_file.parent / f"{prefix}.model.predict.ll"
+            if not pred_file.is_file():
+                log(f"  WARN: no refined prediction for {prefix}, skipping")
+                continue
+
+            new_advice = extract_single_block(
+                pred_file.read_text(encoding="utf-8"), "advice",
+            )
+            ctx = prompt_file.read_text(encoding="utf-8")
+            old_advice = extract_single_block(ctx, "advice")
+
+            if old_advice is None:
+                # No advice block yet — inject one after </code>
+                ctx = ctx.replace(
+                    "</code>\n",
+                    f"</code>\n\n{NEW_HEADER}\n<advice>\n{new_advice}\n</advice>\n",
+                )
+            else:
+                ctx = ctx.replace(old_advice, new_advice or "")
+
+            ctx = ctx.replace(OLD_HEADER, NEW_HEADER)
+            ctx = ctx.replace(OLD_FOOTER, NEW_FOOTER)
+
+            (out_dir / f"{prefix}.prompt.ll").write_text(ctx, encoding="utf-8")
+
+        log(f"Rewritten prompts saved to: {out_dir}")
+        return str(out_dir)
+
+    # ------------------------------------------------------------------
+    # Single-file mode
+    # ------------------------------------------------------------------
+
     def optimize_single_file(self, input_file: str, output_dir: str):
-        """优化单个LLVM IR文件"""
         input_path = Path(input_file)
         if not input_path.exists():
             raise SystemExit(f"Input file not found: {input_file}")
-        
+
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        
-        print(f"Optimizing single file: {input_file}")
-        print(f"Output directory: {output_dir}")
-        
-        # 步骤1: 创建临时目录和文件结构
-        temp_dir = output_path / "temp"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 步骤2: 创建临时数据集结构（包含IR文件）
-        dataset_dir = temp_dir / "dataset"
+        temp = output_path / "temp"
+
+        # Prepare a one-file dataset directory
+        dataset_dir = temp / "dataset"
         dataset_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 将输入IR文件复制到临时数据集目录
-        temp_input_in_dataset = dataset_dir / f"{input_path.name}"
-        shutil.copy2(input_file, temp_input_in_dataset)
-        
-        # 步骤3: 生成初始优化策略
-        print("Step 1: Initial optimization strategy generation")
-        initial_out_dir = temp_dir / "step1_initial"
-        
-        # 调用初始优化策略生成模块
-        initial_out_dir = self.initial_optimizer.generate_optimization_strategies(
+        shutil.copy2(input_file, dataset_dir / input_path.name)
+
+        cfg = self.config
+
+        # Step 1 — generate initial optimisation strategies
+        log("Step 1: Strategy generation")
+        initial_dir = self.strategy_gen.generate(
             data_path=str(dataset_dir),
-            out_dir=str(initial_out_dir),
-            batch_size=1, # because just single file
-            gpus=self.config.gpus,
-            save_all=False
+            out_dir=str(temp / "step1_initial"),
+            batch_size=1,
+            gpus=cfg.gpus,
         )
-        
-        # 步骤4: 优化策略映射
-        print("\nStep 2: Strategy mapping")
-        mapping_out_dir = temp_dir / "step2_mapping"
-        
-        # 调用策略映射模块
-        mapping_out_dir = self.strategy_mapper.map_strategies_to_passes(
-            in_dir=str(initial_out_dir),
-            out_dir=str(mapping_out_dir),
+
+        # Step 2 — map strategies to LLVM analysis passes
+        log("Step 2: Strategy mapping")
+        mapping_dir = self.strategy_map.map_strategies(
+            in_dir=str(initial_dir),
+            out_dir=str(temp / "step2_mapping"),
             topk=3,
-            emit="tokens"
-        )
-        
-        # 步骤5: 优化策略精化
-        print("\nStep 3: Strategy refinement")
-        refinement_out_dir = temp_dir / "step3_refinement"
-        
-        # 调用策略精化模块
-        refinement_out_dir = self.strategy_refiner.refine_strategies(
-            in_dir=mapping_out_dir,
-            ll_dir=dataset_dir,
-            initial_dir=initial_out_dir,
-            out_dir=str(refinement_out_dir),
-            timeout=self.config.timeout,
-            verify_timeout=self.config.verify_timeout
-        )
-        
-        #调用LLM实现strategy refinement
-        refinement_out_dir = self.llm_optimizer.optimize_with_llm(
-            in_dir=refinement_out_dir,
-            out_dir=str(refinement_out_dir),
-            model=self.config.llm_model,
-            api_mode=self.config.api_mode,
-            workers=1
+            emit="tokens",
         )
 
-        # 步骤6: LLM调用优化
-        print("\nStep 4: LLM optimization")
-        llm_out_dir = temp_dir / "step4_realization"
-        llm_out_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 实现prompt生成功能
-        llm_out_dir = self.generate_optimized_prompt(refinement_out_dir, llm_out_dir)
-        
-        # 调用LLM优化模块
-        llm_out_dir = self.llm_optimizer.optimize_with_llm(
-            in_dir=llm_out_dir,
-            out_dir=str(llm_out_dir),
-            model=self.config.llm_model,
-            api_mode=self.config.api_mode,
-            workers=1
-        )
-        
-        # 后处理一下
-        print("\nStep 5: Post processing")
-        llm_out_dir = self.post_processor.post_process(
-            in_dir=str(llm_out_dir)
+        # Step 3 — refine strategies (add analysis info to prompts)
+        log("Step 3: Strategy refinement")
+        refine_dir = self.strategy_refine.refine(
+            in_dir=mapping_dir,
+            ll_dir=str(dataset_dir),
+            initial_dir=str(initial_dir),
+            out_dir=str(temp / "step3_refinement"),
+            timeout=cfg.timeout,
+            verify_timeout=cfg.verify_timeout,
         )
 
-        # 步骤7: 处理优化结果
+        # Step 3b — LLM-based strategy refinement
+        refine_dir = self.llm.batch_query(
+            in_dir=refine_dir,
+            out_dir=refine_dir,
+            model=cfg.llm_model,
+            api_mode=cfg.api_mode,
+            workers=1,
+        )
+
+        # Step 4 — rewrite prompts and call LLM for final IR
+        log("Step 4: LLM realization")
+        realize_dir = str(temp / "step4_realization")
+        realize_dir = self._rewrite_prompts(refine_dir, realize_dir)
+        realize_dir = self.llm.batch_query(
+            in_dir=realize_dir,
+            out_dir=realize_dir,
+            model=cfg.llm_model,
+            api_mode=cfg.api_mode,
+            workers=1,
+        )
+
+        # Step 5 — post-process generated IR
+        log("Step 5: Post-processing")
+        realize_dir = self.post_proc.run(in_dir=realize_dir)
+
+        # Extract final optimised .ll
         output_file = output_path / f"{input_path.stem}.optimized.ll"
-        # 查找优化后的文件并复制到输出目录
-        optimized_files = Path(llm_out_dir).glob("*.model.predict.ll")
-        if optimized_files:
-            first_file = next(optimized_files)
-            with open(first_file, "r", encoding="utf-8") as f:
-                code = f.read()
+        pred_files = list(Path(realize_dir).glob("*.model.predict.ll"))
+        if pred_files:
+            code = extract_single_block(
+                pred_files[0].read_text(encoding="utf-8"), "code",
+            )
+            if code:
+                output_file.write_text(code, encoding="utf-8")
+                log(f"Output: {output_file}")
+                return str(output_path)
 
-            code = self.get_code(code)
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(code)
+        log(f"WARN: no optimised IR produced for {input_path.name}")
+        return None
 
-            print(f"Optimization completed. Output file: {output_file}")
-            return output_path
-        else:
-            print(f"[WARN]: There is no optimized IR file for {input_path}")
-            return None
-    
+    # ------------------------------------------------------------------
+    # Batch mode
+    # ------------------------------------------------------------------
+
     def optimize_batch(self, data_path: str, output_dir: str):
-        """批量优化LLVM IR文件"""
-        in_file_num = sum(1 for _ in Path(data_path).glob("*.ll"))
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        # 步骤1: 初始优化策略生成
-        print("Step 1: Initial optimization strategy generation")
-        initial_out_dir = self.initial_optimizer.generate_optimization_strategies(
+        cfg = self.config
+        n_files = sum(1 for _ in Path(data_path).glob("*.ll"))
+
+        # Step 1
+        log("Step 1: Strategy generation")
+        initial_dir = self.strategy_gen.generate(
             data_path=data_path,
             out_dir=os.path.join(output_dir, "step1_initial"),
-            batch_size=min(self.config.batch_size, in_file_num),
-            gpus=self.config.gpus,
-            save_all=False
+            batch_size=min(cfg.batch_size, n_files),
+            gpus=cfg.gpus,
         )
 
-        # 步骤2: 优化策略映射
-        print("\nStep 2: Strategy mapping")
-        mapping_out_dir = self.strategy_mapper.map_strategies_to_passes(
-            in_dir=str(initial_out_dir),
+        # Step 2
+        log("Step 2: Strategy mapping")
+        mapping_dir = self.strategy_map.map_strategies(
+            in_dir=str(initial_dir),
             out_dir=os.path.join(output_dir, "step2_mapping"),
             topk=3,
-            emit="tokens"
+            emit="tokens",
         )
 
-        # 步骤3: 优化策略精化
-        print("\nStep 3: Strategy refinement")
-        refinement_out_dir = self.strategy_refiner.refine_strategies(
-            in_dir=mapping_out_dir,
+        # Step 3
+        log("Step 3: Strategy refinement")
+        refine_dir = self.strategy_refine.refine(
+            in_dir=mapping_dir,
             ll_dir=data_path,
-            initial_dir=initial_out_dir,
+            initial_dir=str(initial_dir),
             out_dir=os.path.join(output_dir, "step3_refinement"),
-            timeout=self.config.timeout,
-            verify_timeout=self.config.verify_timeout
+            timeout=cfg.timeout,
+            verify_timeout=cfg.verify_timeout,
         )
 
-        # 调用LLM实现strategy refinement
-        refinement_out_dir = self.llm_optimizer.optimize_with_llm(
-            in_dir=refinement_out_dir,
-            out_dir=str(refinement_out_dir),
-            model=self.config.llm_model,
-            api_mode=self.config.api_mode,
-            workers=min(self.config.workers, in_file_num)
+        # Step 3b — LLM-based strategy refinement
+        refine_dir = self.llm.batch_query(
+            in_dir=refine_dir,
+            out_dir=refine_dir,
+            model=cfg.llm_model,
+            api_mode=cfg.api_mode,
+            workers=min(cfg.workers, n_files),
         )
 
-        # 步骤4: LLM调用优化
-        print("\nStep 4: LLM optimization")
-        llm_out_dir = os.path.join(output_dir, "step4_realization")
-        os.makedirs(llm_out_dir, exist_ok=True)
-
-        # 生成优化后的prompt
-        llm_out_dir = self.generate_optimized_prompt(refinement_out_dir, llm_out_dir)
-
-        # 调用LLM优化模块
-        llm_out_dir = self.llm_optimizer.optimize_with_llm(
-            in_dir=llm_out_dir,
-            out_dir=str(llm_out_dir),
-            model=self.config.llm_model,
-            api_mode=self.config.api_mode,
-            workers=min(self.config.workers, in_file_num)
+        # Step 4
+        log("Step 4: LLM realization")
+        realize_dir = os.path.join(output_dir, "step4_realization")
+        realize_dir = self._rewrite_prompts(refine_dir, realize_dir)
+        realize_dir = self.llm.batch_query(
+            in_dir=realize_dir,
+            out_dir=realize_dir,
+            model=cfg.llm_model,
+            api_mode=cfg.api_mode,
+            workers=min(cfg.workers, n_files),
         )
 
-        # 步骤5: 后处理
-        print("\nStep 5: Post processing")
-        llm_out_dir = self.post_processor.post_process(
-            in_dir=str(llm_out_dir)
-        )
+        # Step 5
+        log("Step 5: Post-processing")
+        realize_dir = self.post_proc.run(in_dir=realize_dir)
 
-        # 步骤7: 处理优化结果
-        optimized_files = Path(llm_out_dir).glob("*.model.predict.ll")
-        if optimized_files:
-            for opt_f in optimized_files:
-                output_file = Path(output_dir) / f"{opt_f.stem}.ll"
-                with open(opt_f, "r", encoding="utf-8") as f:
-                    code = f.read()
-
-                code = self.get_code(code)
-                with open(output_file, "w", encoding="utf-8") as f:
-                    f.write(code)
-
-            print(f"Optimization completed. Output dir: {output_dir}")
+        # Extract final .ll files
+        pred_files = list(Path(realize_dir).glob("*.model.predict.ll"))
+        if pred_files:
+            for pf in pred_files:
+                code = extract_single_block(pf.read_text(encoding="utf-8"), "code")
+                if code:
+                    stem = pf.name.replace(".model.predict.ll", "")
+                    (output_path / f"{stem}.optimized.ll").write_text(
+                        code, encoding="utf-8",
+                    )
+            log(f"Output directory: {output_dir}")
             return output_dir
-        else:
-            print(f"[WARN]: There is no optimized IR file for {data_path}")
-            return None
-    
-    def _unescape_html(self, s: str) -> str:
-        HTML_UNESCAPE = (
-            ("&lt;", "<"),
-            ("&gt;", ">"),
-            ("&amp;", "&"),
-        )
-        for a, b in HTML_UNESCAPE:
-            s = s.replace(a, b)
-        return s
 
-    def _clean_block(self, s: str) -> str:
-        s = self._unescape_html(s or "")
-        s = s.strip("\n\r\t ")
-        return s
+        log(f"WARN: no optimised IR produced for {data_path}")
+        return None
 
-    def get_advice(self, text):
-        code_blocks: List[str] = []
-        ADVICE_RE = re.compile(r"<advice>(.*?)</advice>", re.DOTALL | re.IGNORECASE)
-        for m in ADVICE_RE.finditer(text):
-            blk = self._clean_block(m.group(1))
-            # Filter out the common placeholder caught from "single <code>...</code> block"
-            if blk == "..." or not blk:
-                continue
-            code_blocks.append(blk)
-        if len(code_blocks) == 0:
-            return None
-        assert (len(code_blocks) == 1)
-        return code_blocks[0]
-    
-    def get_code(self, text):
-        code_blocks: List[str] = []
-        ADVICE_RE = re.compile(r"<code>(.*?)</code>", re.DOTALL | re.IGNORECASE)
-        for m in ADVICE_RE.finditer(text):
-            blk = self._clean_block(m.group(1))
-            # Filter out the common placeholder caught from "single <code>...</code> block"
-            if blk == "..." or not blk:
-                continue
-            code_blocks.append(blk)
-        if len(code_blocks) == 0:
-            return None
-        assert (len(code_blocks) == 1)
-        return code_blocks[0]
-
-    def generate_optimized_prompt(self, refinement_out_dir, llm_out_dir):
-        advice_info_old_header = "You may refer to the following advice, but feel free to adapt, extend, or deviate from it as you see fit."
-        advice_info_new_header = "You can refer to the following advice."
-        old_footer = "Please output the final optimization advice wrapped in <advice>...</advice> and the full optimized LLVM IR wrapped in <code>...</code>."
-        new_footer = "Please output the full optimized LLVM IR wrapped in <code>...</code>."
-
-
-        """生成优化后的prompt"""
-        import re
-        
-        # 步骤1: 提取advice内容
-        print("Create optimization prompt...")
-        
-        # 查找所有*.prompt.ll文件
-        prompt_files = list(Path(refinement_out_dir).glob("*.prompt.ll"))
-        for file in prompt_files:
-            model_pred_name = file.stem[:-len(".prompt")]
-            if not Path(f"{file.parent}/{model_pred_name}.model.predict.ll").is_file():
-                print(f"[WARN] There is no refined strategy in {file.parent} for {model_pred_name}")
-                continue
-            with open(f"{file.parent}/{model_pred_name}.model.predict.ll", "r") as f:
-                ctx = f.read()
-                new_advice = self.get_advice(ctx)
-            with open(file, "r") as f:
-                ctx = f.read()
-                old_advice = self.get_advice(ctx)
-                if old_advice == None:
-                    ctx = ctx.replace("</code>\n", f"</code>\n\n{advice_info_new_header}\n<advice>\n{new_advice}\n</advice>\n")
-                    # print(ctx)
-                else:
-                    ctx = ctx.replace(old_advice, new_advice)
-                ctx = ctx.replace(advice_info_old_header, advice_info_new_header)
-                ctx = ctx.replace(old_footer, new_footer)
-            # 保存新prompt到输出目录
-            output_prompt_file = f"{llm_out_dir}/{model_pred_name}.prompt.ll"
-            with open(output_prompt_file, "w") as f:
-                f.write(ctx)
-
-        print(f"New prompt saved to: {llm_out_dir}")
-        return llm_out_dir
+    # ------------------------------------------------------------------
+    # Entry
+    # ------------------------------------------------------------------
 
     def run(self, input_path: str, output_dir: str, mode: str):
-        """运行优化流程"""
         if mode == "single":
             return self.optimize_single_file(input_path, output_dir)
         elif mode == "batch":
@@ -362,47 +307,44 @@ class IR_Optimizer:
         else:
             raise SystemExit(f"Invalid mode: {mode}")
 
+
+# ======================================================================
+# CLI
+# ======================================================================
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="LLVM IR Optimizer")
-    parser.add_argument("--mode", choices=["single", "batch"], required=True, help="Optimization mode: single file or batch")
-    parser.add_argument("--input", required=True, help="Input file (single mode) or data directory (batch mode)")
-    parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--config", default="../config/config.yaml", help="Path to configuration file")
-    
-    # 模型配置
-    parser.add_argument("--model_path", help="Path to the base model")
-    parser.add_argument("--adapter_path", help="Path to the adapter")
-    
-    # LLVM配置
-    parser.add_argument("--passregistry_def", help="Path to PassRegistry.def")
-    parser.add_argument("--llvm_lib_root", help="Path to LLVM lib directory")
-    parser.add_argument("--opt_bin", help="Path to opt binary")
-    parser.add_argument("--ll_dir", help="Path to LLVM IR files directory")
-    
-    # LLM配置
-    parser.add_argument("--base_url", help="OpenAI-compatible API base URL")
-    parser.add_argument("--api_key", help="API key")
-    
-    # 运行配置
-    parser.add_argument("--batch_size", type=int, help="Batch size for initial optimization")
-    parser.add_argument("--gpus", help="GPUs to use for initial optimization")
-    
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="LLVM IR Optimizer")
+    p.add_argument("--mode", choices=["single", "batch"], required=True)
+    p.add_argument("--input", required=True,
+                   help="Input .ll file (single) or directory (batch)")
+    p.add_argument("--output", required=True, help="Output directory")
+    p.add_argument("--config", default="../config/config.yaml")
+
+    p.add_argument("--model_path")
+    p.add_argument("--adapter_path")
+    p.add_argument("--passregistry_def")
+    p.add_argument("--llvm_lib_root")
+    p.add_argument("--opt_bin")
+    p.add_argument("--ll_dir")
+    p.add_argument("--base_url")
+    p.add_argument("--api_key")
+    p.add_argument("--batch_size", type=int)
+    p.add_argument("--gpus")
+    return p.parse_args()
+
 
 def main():
     args = parse_args()
-    
-    # 过滤出非None的参数
-    config_kwargs = {k: v for k, v in vars(args).items() if v is not None and k not in ['mode', 'input', 'output', 'config']}
-    
-    # 创建配置对象
-    config = Config(config_file=args.config, **config_kwargs)
-    
-    optimizer = IR_Optimizer(config)
-    result_dir = optimizer.run(args.input, args.output, args.mode)
-    if result_dir != None:
-        print(f"\nOptimization completed successfully!")
-        print(f"Result directory: {result_dir}")
+    overrides = {
+        k: v for k, v in vars(args).items()
+        if v is not None and k not in ("mode", "input", "output", "config")
+    }
+    config = Config(config_file=args.config, **overrides)
+    optimizer = IROptimizer(config)
+    result = optimizer.run(args.input, args.output, args.mode)
+    if result:
+        log(f"All done.  Result: {result}")
+
 
 if __name__ == "__main__":
     main()
