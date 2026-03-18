@@ -6,21 +6,10 @@ from pathlib import Path
 from typing import List, Union, Tuple, Dict, Optional
 
 import torch
-import torch.multiprocessing as mp
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import datasets
 from tqdm import tqdm
-import pandas as pd
 
-# 定义Args类在模块级别，使其可以被pickle序列化
-class Args:
-    def __init__(self, data_path, out_dir, batch_size, gpus, save_all):
-        self.data_path = data_path
-        self.out_dir = out_dir
-        self.batch_size = batch_size
-        self.gpus = gpus
-        self.save_all = save_all
 
 class InitialOptimizationGenerator:
     def __init__(self, model_path: str, adapter_path: str):
@@ -28,30 +17,30 @@ class InitialOptimizationGenerator:
         self.adapter_path = adapter_path
         self.tokenizer = None
         self.model = None
-    
+
     def get_prompt(self, full_data: str) -> str:
         if "[/INST]" in full_data:
             return full_data.split("[/INST]")[0] + "[/INST]"
         return full_data
-    
+
     def get_res(self, model_res: str) -> str:
         if "</s>" in model_res:
             model_res = model_res.split("</s>")[0]
-        
+
         pattern = r"<code>(.*?)</code>"
         if "[/INST]" in model_res:
             res_part = model_res.split("[/INST]")[-1]
         else:
             res_part = model_res
-        
+
         m = re.findall(pattern, res_part, re.DOTALL)
         return m[0] if m else ""
-    
+
     def ensure_dir(self, p: Union[str, Path]) -> Path:
         path = Path(p)
         path.mkdir(parents=True, exist_ok=True)
         return path
-    
+
     def pick_latest_checkpoint(self, adapters_root: Path) -> str:
         if not adapters_root.exists():
             if adapters_root.name.startswith("checkpoint-"):
@@ -62,157 +51,80 @@ class InitialOptimizationGenerator:
         cands = [p for p in adapters_root.iterdir() if p.is_dir() and p.name.startswith("checkpoint-")]
         if not cands:
             return str(adapters_root)
-        
+
         def score(p: Path) -> int:
             m = re.match(r"checkpoint-(\d+)", p.name)
             return int(m.group(1)) if m else -1
-        
+
         return str(max(cands, key=score))
-    
-    def gpu_worker(self, rank: int, gpu_id: int, args, data: List[Dict], subset_indices: List[int], return_dict):
-        try:
-            device = torch.device(f"cuda:{gpu_id}")
-            torch.cuda.set_device(device)
-            
-            out_dir = Path(args.out_dir)
 
-            print(f"[Worker-{rank}] Launching on GPU {gpu_id} | Data samples: {len(subset_indices)}")
+    def _load_model(self, gpus: str):
+        """加载模型和tokenizer，只加载一次，跨多卡放置"""
+        if self.model is not None:
+            return
 
-            tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-            tokenizer.padding_side = "left"
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-                tokenizer.pad_token_id = tokenizer.eos_token_id
+        gpu_list = [int(x) for x in gpus.split(",")]
+        print(f"[INFO] Loading model on GPUs: {gpu_list}")
 
-            eos_token_ids = [tokenizer.eos_token_id]
-            stop_str = "</code>"
-            stop_ids = tokenizer.encode(stop_str, add_special_tokens=False)
-            if len(stop_ids) == 1:
-                eos_token_ids.append(stop_ids[0])
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-            model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
-                trust_remote_code=True,
-                device_map=None 
-            ).to(device)
+        # 构建 device_map，让模型自动分布到指定的多张卡上
+        max_memory = {gpu_id: "80GiB" for gpu_id in gpu_list}
+        max_memory["cpu"] = "0GiB"
 
-            adapter_path = Path(self.adapter_path)
-            checkpoint_dir = self.pick_latest_checkpoint(adapter_path)
-            print(f"[Worker-{rank}] Loading adapter from: {checkpoint_dir}")
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            trust_remote_code=True,
+            device_map="auto",
+            max_memory=max_memory,
+        )
 
-            model = PeftModel.from_pretrained(model, checkpoint_dir)
-            model = model.merge_and_unload()
-            model.eval()
+        adapter_path = Path(self.adapter_path)
+        checkpoint_dir = self.pick_latest_checkpoint(adapter_path)
+        print(f"[INFO] Loading adapter from: {checkpoint_dir}")
 
-            # 使用传递的数据，不再重复加载数据集
-            my_dataset = [data[i] for i in subset_indices]
-            
-            prompts = [self.get_prompt(item["prompt"]) for item in my_dataset]
-            raw_full_texts = [item["prompt"] for item in my_dataset] 
-            raw_truths_code = [self.get_res(item["prompt"]) for item in my_dataset]
-            raw_indices = [subset_indices[i] for i in range(len(subset_indices))]
+        self.model = PeftModel.from_pretrained(self.model, checkpoint_dir)
+        self.model = self.model.merge_and_unload()
+        self.model.eval()
+        print("[INFO] Model loaded and ready.")
 
-            batch_size = args.batch_size
-            total_samples = len(prompts)
-            num_batches = math.ceil(total_samples / batch_size)
-            
-            acc_count = 0
-            processed_count = 0
-
-            iterator = tqdm(range(num_batches), desc=f"GPU-{gpu_id}", position=rank)
-
-            with torch.inference_mode():
-                for i in iterator:
-                    start = i * batch_size
-                    end = min((i + 1) * batch_size, total_samples)
-                    batch_prompts = prompts[start:end]
-                    
-                    inputs = tokenizer(
-                        batch_prompts,
-                        padding=True,
-                        truncation=True,
-                        max_length=8192,
-                        return_tensors="pt"
-                    ).to(device)
-
-                    output_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=8192,
-                        do_sample=False,
-                        temperature=0.0,
-                        pad_token_id=tokenizer.pad_token_id,
-                        eos_token_id=eos_token_ids
-                    )
-
-                    gen_input_len = inputs["input_ids"].shape[1]
-                    generated_tokens = output_ids[:, gen_input_len:]
-                    batch_responses = tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
-
-                    for j, response in enumerate(batch_responses):
-                        global_idx = start + j
-                        raw_idx = raw_indices[global_idx]
-                        if tokenizer.eos_token in response:
-                            clean_response = response.split(tokenizer.eos_token)[0]
-                        else:
-                            clean_response = response
-                        
-                        pred_code = self.get_res(clean_response)
-                        truth_code = raw_truths_code[global_idx]
-                        
-
-                        base_name = out_dir / f"{data[raw_idx]['filename']}"
-                        
-                        with open(f"{base_name}.model.predict.ll", "w", encoding="utf-8") as f:
-                            f.write(clean_response)
-                        with open(f"{base_name}.truth.ll", "w", encoding="utf-8") as f:
-                            f.write(raw_full_texts[global_idx])
-                        with open(f"{base_name}.prompt.ll", "w", encoding="utf-8") as f:
-                            f.write(batch_prompts[j])
-
-
-            print(f"[Worker-{rank}] Done.")
-            return_dict[rank] = str(out_dir)
-
-        except Exception as e:
-            print(f"[Worker-{rank}] Error: {e}")
-            import traceback
-            traceback.print_exc()
-            return_dict[rank] = None
-    
     def generate_optimization_strategies(self, data_path: str, out_dir: str, batch_size: int = 4, gpus: str = "0,1,2", save_all: bool = False):
-        # 使用模块级别的Args类
-        args = Args(data_path, out_dir, batch_size, gpus, save_all)
-        mp.set_start_method('spawn', force=True)
-        
-        gpu_list = [int(x) for x in args.gpus.split(",")]
-        
-        out_dir = self.ensure_dir(args.out_dir)
-        
+        out_dir = self.ensure_dir(out_dir)
+
         print(f"[INFO] Output Dir : {out_dir}")
         print(f"[INFO] Strategy   : Strict 8192 length + EOS Cleaning")
-        
+
         # 检查data_path是否是目录且包含IR文件
-        data_path_obj = Path(args.data_path)
+        data_path_obj = Path(data_path)
         dataset_data = []
-        
+
         if data_path_obj.is_dir():
-            # 查找目录中的IR文件
             ir_files = list(data_path_obj.glob("*.ll"))
-            
             if ir_files:
                 print(f"[INFO] Found {len(ir_files)} IR files in directory {data_path_obj}")
-                # 创建临时数据集
-                for i, ir_file in enumerate(ir_files):
+                for ir_file in ir_files:
                     with open(ir_file, 'r', encoding='utf-8') as f:
                         content = f.read()
-                    # 构建prompt格式，参考原始数据集的结构
-                    prompt = f"[INST]Given the following LLVM IR, propose key optimization transformation steps to outperform LLVM -O3.\nWrite your answer inside a single <code>...</code> block.\nInside <code>, write ONLY <step></step> blocks.\nEach step MUST follow this format:\n<step>\n**Transformation**: [Brief name of the optimization]\n**Change**: [A short description of the change applied to the code]\n</step>\nDo NOT output optimized IR.\n\n<ir>{content}</ir>[/INST]\n"
-                    # 保存原始文件名
-                    filename = ir_file.stem
-                    dataset_data.append({"prompt": prompt, "filename": filename})
-                
+                    prompt = (
+                        f"[INST]Given the following LLVM IR, propose key optimization transformation steps to outperform LLVM -O3.\n"
+                        f"Write your answer inside a single <code>...</code> block.\n"
+                        f"Inside <code>, write ONLY <step></step> blocks.\n"
+                        f"Each step MUST follow this format:\n"
+                        f"<step>\n"
+                        f"**Transformation**: [Brief name of the optimization]\n"
+                        f"**Change**: [A short description of the change applied to the code]\n"
+                        f"</step>\n"
+                        f"Do NOT output optimized IR.\n\n"
+                        f"<ir>{content}</ir>[/INST]\n"
+                    )
+                    dataset_data.append({"prompt": prompt, "filename": ir_file.stem})
+
                 total_samples = len(dataset_data)
                 print(f"[INFO] Total samples: {total_samples}")
             else:
@@ -223,28 +135,71 @@ class InitialOptimizationGenerator:
             msg = f"[ERROR] `{data_path_obj}` is not a directory."
             print(msg)
             raise SystemExit(msg)
-        indices = list(range(total_samples))
-        chunk_size = math.ceil(total_samples / len(gpu_list))
-        chunks = [indices[i:i + chunk_size] for i in range(0, total_samples, chunk_size)]
-        
-        manager = mp.Manager()
-        return_dict = manager.dict()
-        processes = []
+
+        # 加载模型（只加载一次）
+        self._load_model(gpus)
+
+        tokenizer = self.tokenizer
+        model = self.model
+
+        eos_token_ids = [tokenizer.eos_token_id]
+        stop_str = "</code>"
+        stop_ids = tokenizer.encode(stop_str, add_special_tokens=False)
+        if len(stop_ids) == 1:
+            eos_token_ids.append(stop_ids[0])
+
+        prompts = [self.get_prompt(item["prompt"]) for item in dataset_data]
+        raw_full_texts = [item["prompt"] for item in dataset_data]
+        raw_truths_code = [self.get_res(item["prompt"]) for item in dataset_data]
+
+        num_batches = math.ceil(total_samples / batch_size)
 
         start_time = time.time()
-        for rank, gpu_id in enumerate(gpu_list):
-            if rank >= len(chunks):
-                break
-            p = mp.Process(
-                target=self.gpu_worker,
-                args=(rank, gpu_id, args, dataset_data, chunks[rank], return_dict)
-            )
-            p.start()
-            processes.append(p)
-        
-        for p in processes:
-            p.join()
-            
+        iterator = tqdm(range(num_batches), desc="Generating")
+
+        with torch.inference_mode():
+            for i in iterator:
+                start = i * batch_size
+                end = min((i + 1) * batch_size, total_samples)
+                batch_prompts = prompts[start:end]
+
+                inputs = tokenizer(
+                    batch_prompts,
+                    padding=True,
+                    truncation=True,
+                    max_length=8192,
+                    return_tensors="pt"
+                ).to(model.device)
+
+                output_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=8192,
+                    do_sample=False,
+                    temperature=0.0,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=eos_token_ids
+                )
+
+                gen_input_len = inputs["input_ids"].shape[1]
+                generated_tokens = output_ids[:, gen_input_len:]
+                batch_responses = tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+
+                for j, response in enumerate(batch_responses):
+                    global_idx = start + j
+                    if tokenizer.eos_token in response:
+                        clean_response = response.split(tokenizer.eos_token)[0]
+                    else:
+                        clean_response = response
+
+                    base_name = out_dir / dataset_data[global_idx]["filename"]
+
+                    with open(f"{base_name}.model.predict.ll", "w", encoding="utf-8") as f:
+                        f.write(clean_response)
+                    with open(f"{base_name}.truth.ll", "w", encoding="utf-8") as f:
+                        f.write(raw_full_texts[global_idx])
+                    with open(f"{base_name}.prompt.ll", "w", encoding="utf-8") as f:
+                        f.write(batch_prompts[j])
+
         print(f"[INFO] Finished in {time.time() - start_time:.2f}s")
-        
+
         return out_dir
