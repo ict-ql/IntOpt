@@ -1,104 +1,132 @@
-# LLVM IR Optimizer
+# IntOpt: Intent-Driven IR Optimization with Large Language Models
 
-一个基于LLM的LLVM IR优化系统，支持单个文件和批处理模式的优化。
+IntOpt is an automated LLVM IR optimization pipeline that uses a fine-tuned code LLM to generate optimization strategies, maps them to concrete LLVM passes, refines the strategies with analysis feedback, and finally calls a frontier LLM to produce optimized IR. It also includes differential testing and performance benchmarking to validate correctness and measure speedup.
 
-## 功能特点
+## Pipeline Overview
 
-- **模块化设计**：采用模块化架构，提高代码可维护性和可扩展性
-- **多模式支持**：支持单个文件优化和批处理模式
-- **完整的优化流程**：包含初始优化策略生成、优化策略映射、优化策略精化和LLM调用优化四个阶段
-- **可配置性**：通过配置文件管理模型路径、数据路径等参数
+```
+Input .ll ──► Strategy Generation ──► Strategy Mapping ──► Strategy Refinement
+                  (fine-tuned LLM)     (TF-IDF + cosine)    (LLVM analysis passes)
+                                                                     │
+                                                                     ▼
+                                                            LLM Refinement
+                                                            (frontier LLM)
+                                                                     │
+                                                                     ▼
+              Output .optimized.ll ◄── Post-Processing ◄── LLM Realization
+                                       (SSA cleanup,        (frontier LLM)
+                                        const prop, etc.)
+```
 
-## 目录结构
+**Step 1 — Strategy Generation**: A fine-tuned `llm-compiler-13b-ftd` model reads the input IR and proposes high-level optimization intents (e.g., "loop unrolling", "dead code elimination").
+
+**Step 2 — Strategy Mapping**: Each intent is vectorized with TF-IDF and matched against LLVM's `PassRegistry.def` via cosine similarity to find the top-K relevant analysis/transform passes.
+
+**Step 3 — Strategy Refinement**: The matched passes are executed on the input IR via `opt`, and the resulting analysis output is injected into a prompt. A frontier LLM refines the strategy with this concrete feedback.
+
+**Step 4 — LLM Realization**: The refined strategy, analysis info, and original IR are assembled into a final prompt. A frontier LLM produces the optimized IR.
+
+**Step 5 — Post-Processing**: Cleans up LLM artifacts — strips markdown fences, removes redundant IR attributes, eliminates trivial bitcasts/SSA copies, and propagates constants.
+
+## Project Structure
 
 ```
 intop/
-├── config/           # 配置文件
-├── scripts/          # 示例脚本
-├── src/              # 源代码
-│   ├── modules/      # 核心模块
-│   └── main.py       # 主入口
-└── README.md         # 文档
+├── config/
+│   └── config.yaml              # All configuration (model, LLVM, LLM, diff/perf testing)
+├── scripts/
+│   ├── run_single_file.py       # Convenience wrapper for single-file mode
+│   └── run_batch.py             # Convenience wrapper for batch mode
+├── src/
+│   ├── main.py                  # CLI entry point & pipeline orchestrator (IROptimizer)
+│   └── modules/
+│       ├── strategy_generator.py  # Step 1: fine-tuned LLM inference
+│       ├── strategy_mapping.py    # Step 2: TF-IDF pass matching
+│       ├── strategy_refinement.py # Step 3: LLVM analysis + prompt construction
+│       ├── llm_client.py          # Async batch LLM API client
+│       ├── post_processing.py     # Step 5: IR cleanup transforms
+│       ├── diff_testing.py        # Differential testing (libFuzzer)
+│       ├── perf_testing.py        # Performance benchmarking
+│       └── utils.py               # Shared helpers (log, tag extraction, etc.)
+├── test/                          # Sample input .ll files
+└── test.opt/                      # Sample pipeline output (step1–step4)
 ```
 
-## 核心模块
+## Modes
 
-1. **initial_optimization.py**：初始优化策略生成模块，使用fine-tuned的llm-compiler-13b-ftd模型处理输入IR
-2. **strategy_mapping.py**：优化策略映射模块，使用TF-IDF向量化和余弦相似度匹配查找最相近的Top-K pass token
-3. **strategy_refinement.py**：优化策略精化模块，生成refine strategy所需的prompt，包含LLVM对应Transformation的analysis信息
-4. **llm_optimization.py**：LLM调用优化模块，调用gpt-5模型获取refined后的strategy
-
-## 配置文件
-
-配置文件位于 `config/config.yaml`，包含以下配置项：
-
-- **model**：模型路径配置
-- **llvm**：LLVM相关配置
-- **llm**：LLM相关配置
-- **run**：运行配置
-- **paths**：路径配置
-
-## 使用方法
-
-### 优化单个文件
-
-```bash
-cd scripts
-python run_single_file.py --input /path/to/input.ll --output /path/to/output_dir
-```
-
-### 批量优化文件
-
-```bash
-cd scripts
-python run_batch.py --input /path/to/data_dir --output /path/to/output_dir
-```
-
-### 直接使用主入口
+### `single` — Optimize a single IR file
 
 ```bash
 cd src
 python main.py --mode single --input /path/to/input.ll --output /path/to/output_dir
 ```
 
+### `batch` — Optimize a directory of IR files
+
 ```bash
 cd src
 python main.py --mode batch --input /path/to/data_dir --output /path/to/output_dir
 ```
 
+### `diff_test` — Differential testing
+
+Validates correctness of optimized IR by generating libFuzzer harnesses, compiling them with the original and optimized IR, and fuzzing to detect mismatches.
+
 ```bash
 cd src
-# the '/path/to/data_dir_unopt' stores AA.ll, the '/path/to/data_dir_opt' stores AA.optimized.ll
-python main.py --mode diff_test --input /path/to/data_dir_unopt:/path/to/data_dir_opt --output /path/to/output_dir
+# original_dir contains *.ll, optimized_dir contains *.optimized.ll
+python main.py --mode diff_test \
+    --input /path/to/original_dir:/path/to/optimized_dir \
+    --output /path/to/output_dir
 ```
 
-## 依赖项
+Smart resumption: if `bins/`, `harness/`, or `combined/` already exist under the output directory, the pipeline skips completed stages.
+
+Sub-steps:
+1. **Prepare combined IR** — Merges each (original, optimized) pair into a single module with `_opt`-suffixed function names, using brace-counting IR parsing.
+2. **Generate harnesses** — Asks a frontier LLM to produce `fuzz.cc` for each combined IR.
+3. **Build binaries** — `llc` + `clang++ -fsanitize=fuzzer,address,undefined`.
+4. **Run fuzzing** — Executes each binary with configurable runs/timeout. Supports parallel execution.
+
+### `perf_test` — Performance benchmarking
+
+Measures speedup of optimized IR vs. original. Requires diff testing to pass first (runs it automatically if needed).
+
+```bash
+cd src
+python main.py --mode perf_test \
+    --input /path/to/original_dir:/path/to/optimized_dir \
+    --output /path/to/output_dir
+```
+
+Sub-steps:
+1. **Collect corpus** — Runs diff-test fuzzing binaries briefly to generate diverse inputs (skipped if `corpus_dir` is set in config).
+2. **Generate bench harnesses** — Transforms `fuzz.cc` → `bench.cc` with `clock_gettime` timing instrumentation around each `(base, opt)` call pair.
+3. **Build bench binaries** — `llc` + `clang++` without sanitizers for accurate timing.
+4. **Run benchmarks** — Executes each binary on every corpus file, records per-corpus metrics, and averages them.
+
+Outputs:
+- `perf_report.csv` — One row per test case (averaged speedup).
+- `perf_report_detail.csv` — One row per (test case, corpus file).
+
+## Configuration
+
+All settings live in `config/config.yaml`:
+
+| Section | Key fields |
+|---|---|
+| `model` | `model_path`, `adapter_path` — fine-tuned model for strategy generation |
+| `llvm` | `passregistry_def`, `llvm_lib_root`, `opt_bin`, `ll_dir` |
+| `llm` | `base_url`, `api_key`, `llm_model`, `api_mode`, `workers`, `max_output_tokens` |
+| `run` | `batch_size`, `gpus`, `timeout`, `verify_timeout` |
+| `diff_testing` | `llc`, `clangxx`, `fuzz_runs`, `fuzz_timeout`, `build_workers`, `fuzz_workers` |
+| `perf_testing` | `corpus_dir`, `corpus_time`, `bench_iters`, `bench_timeout`, `bench_workers` |
+
+## Dependencies
 
 - Python 3.8+
-- PyTorch
-- Transformers
-- PEFT
+- PyTorch, Transformers, PEFT
 - scikit-learn
-- OpenAI
-- BeautifulSoup4
-- requests
-- tqdm
-- pandas
-
-## 注意事项
-
-1. 确保配置文件中的路径设置正确
-2. 批量优化模式需要提供符合格式的数据集
-3. 单个文件优化模式正在开发中，目前主要支持批处理模式
-
-## 原始功能保留
-
-重构后的系统完整保留了原始工程的核心功能：
-
-1. 使用fine-tuned的llm-compiler-13b-ftd模型处理输入IR
-2. 提取每个<step>中的Transformation + Change作为查询内容
-3. 应用TF-IDF向量化处理
-4. 使用余弦相似度(cosine similarity)查找最相近的Top-K pass token
-5. 生成refine strategy所需的prompt，包含LLVM对应Transformation的analysis信息
-6. 调用gpt-5模型获取refined后的strategy
-7. 将refined strategy、analysis信息及未优化的IR整合为完整prompt
+- OpenAI SDK
+- LLVM toolchain (`opt`, `llc`, `clang++`)
+- libFuzzer (for diff testing)
