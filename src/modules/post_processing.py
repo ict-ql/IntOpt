@@ -123,6 +123,30 @@ def _delete_ssa_copies(ir_text: str) -> str:
     return _apply_rewrites("".join(lines), repl, delete_idx)
 
 
+# Match  %var = <integer_literal>  (possibly negative)
+_CONST_ASSIGN_RE = re.compile(
+    r"""(?mx) ^
+    \s*(?P<lhs>%[-a-zA-Z$._0-9]+)\s*=\s*(?P<val>-?\d+)
+    \s*(?:,.*)?$"""
+)
+
+def _propagate_constants(ir_text: str) -> str:
+    """Propagate constant assignments like  %one = 72340172838076673.
+
+    Replaces all uses of %one with the literal value and removes the
+    assignment line."""
+    lines = ir_text.splitlines(keepends=True)
+    repl: Dict[str, str] = {}
+    delete_idx: Set[int] = set()
+    for i, line in enumerate(lines):
+        m = _CONST_ASSIGN_RE.match(line)
+        if not m:
+            continue
+        repl[m.group("lhs")] = m.group("val")
+        delete_idx.add(i)
+    return _apply_rewrites("".join(lines), repl, delete_idx)
+
+
 # ---------------------------------------------------------------------------
 # Public class
 # ---------------------------------------------------------------------------
@@ -142,6 +166,7 @@ class PostProcessor:
             ctx = _delete_redundant_info(ctx)
             ctx = _delete_bitcast(ctx)
             ctx = _delete_ssa_copies(ctx)
+            ctx = _propagate_constants(ctx)
             f.write_text(ctx, encoding="utf-8")
 
         log(f"[PostProcess] Done. Output: {in_dir_p}")
