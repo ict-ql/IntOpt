@@ -25,17 +25,14 @@ class Config:
     """Merge defaults ← YAML file ← CLI overrides into a flat namespace."""
 
     _DEFAULTS = {
-        "model_path": "/home/amax/wzh/Models/llm-compiler-13b-ftd",
-        "adapter_path": "/home/amax/yangz/Projects/2025-IR-Optset-Plus/"
-                        "05-Checkpoints/ICML/icml-13b-ftd-step-5k-4000-final",
-        "passregistry_def": "/home/amax/yangz/Env/llvm-project/llvm/lib/"
-                            "Passes/PassRegistry.def",
-        "llvm_lib_root": "/home/amax/yangz/Env/llvm-project/llvm/lib",
-        "opt_bin": "/home/amax/yangz/Env/llvm-project/build/bin/opt",
-        "ll_dir": "/home/amax/yangz/Projects/2025-IR-Dataset/ICML/"
-                  "qiu-extend-5k",
-        "base_url": "https://cloud.infini-ai.com/maas/v1",
-        "api_key": "sk-wa5ipdlq2zi2tmjt",
+        "model_path": "",
+        "adapter_path": "",
+        "passregistry_def": "",
+        "llvm_lib_root": "",
+        "opt_bin": "",
+        "ll_dir": "", #IR dir
+        "base_url": "",
+        "api_key": "",
         "batch_size": 4,
         "gpus": "0,1,2",
     }
