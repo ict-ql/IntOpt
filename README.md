@@ -66,6 +66,12 @@ cd src
 python main.py --mode batch --input /path/to/data_dir --output /path/to/output_dir
 ```
 
+```bash
+cd src
+# the '/path/to/data_dir_unopt' stores AA.ll, the '/path/to/data_dir_opt' stores AA.optimized.ll
+python main.py --mode diff_test --input /path/to/data_dir_unopt:/path/to/data_dir_opt --output /path/to/output_dir
+```
+
 ## 依赖项
 
 - Python 3.8+
