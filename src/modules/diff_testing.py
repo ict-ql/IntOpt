@@ -498,8 +498,12 @@ class DiffTester:
         bin_dir: str,
         fuzz_runs: int = 200000,
         fuzz_timeout: int = 600,
+        workers: int = 1,
     ) -> Dict[str, dict]:
         """Run each fuzzing binary and collect results.
+
+        *workers* controls parallelism: 1 = sequential, >1 = parallel.
+
         Returns a dict mapping stem → {status, exit_code, output_tail}."""
 
         bin_p = Path(bin_dir)
@@ -509,19 +513,36 @@ class DiffTester:
             raise SystemExit(f"No fuzzing binaries found under {bin_p}")
 
         log(f"Running {len(bins)} fuzzing binaries "
-            f"(runs={fuzz_runs}, timeout={fuzz_timeout}s) ...")
+            f"(runs={fuzz_runs}, timeout={fuzz_timeout}s, workers={workers}) ...")
 
         results: Dict[str, dict] = {}
-        for i, b in enumerate(bins, start=1):
-            stem = b.parent.name
-            status, rc, tail = _run_fuzz_bin(b, fuzz_runs, fuzz_timeout)
-            results[stem] = {
-                "status": status,
-                "exit_code": rc,
-                "output_tail": tail,
-            }
-            marker = "PASS" if status == "PASS" else f"**{status}**"
-            log(f"  [{i}/{len(bins)}] {stem}: {marker} (rc={rc})")
+
+        if workers <= 1:
+            for i, b in enumerate(bins, start=1):
+                stem = b.parent.name
+                status, rc, tail = _run_fuzz_bin(b, fuzz_runs, fuzz_timeout)
+                results[stem] = {
+                    "status": status, "exit_code": rc, "output_tail": tail,
+                }
+                marker = "PASS" if status == "PASS" else f"**{status}**"
+                log(f"  [{i}/{len(bins)}] {stem}: {marker} (rc={rc})")
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {
+                    ex.submit(_run_fuzz_bin, b, fuzz_runs, fuzz_timeout): b
+                    for b in bins
+                }
+                done = 0
+                for fut in as_completed(futs):
+                    done += 1
+                    b = futs[fut]
+                    stem = b.parent.name
+                    status, rc, tail = fut.result()
+                    results[stem] = {
+                        "status": status, "exit_code": rc, "output_tail": tail,
+                    }
+                    marker = "PASS" if status == "PASS" else f"**{status}**"
+                    log(f"  [{done}/{len(bins)}] {stem}: {marker} (rc={rc})")
 
         n_pass = sum(1 for r in results.values() if r["status"] == "PASS")
         n_fail = sum(1 for r in results.values() if r["status"] == "FAIL")
@@ -544,6 +565,7 @@ class DiffTester:
         build_workers: int = 16,
         fuzz_runs: int = 200000,
         fuzz_timeout: int = 600,
+        fuzz_workers: int = 1,
     ) -> Dict[str, dict]:
         """End-to-end diff testing.  Returns fuzzing results dict."""
 
@@ -560,4 +582,7 @@ class DiffTester:
         self.build_binaries(
             combined_dir, harness_dir, bin_dir, workers=build_workers,
         )
-        return self.run_fuzzing(bin_dir, fuzz_runs=fuzz_runs, fuzz_timeout=fuzz_timeout)
+        return self.run_fuzzing(
+            bin_dir, fuzz_runs=fuzz_runs, fuzz_timeout=fuzz_timeout,
+            workers=fuzz_workers,
+        )
