@@ -396,6 +396,7 @@ class IROptimizer:
             original_dir=original_dir,
             optimized_dir=optimized_dir,
             work_dir=str(work_dir),
+            harness_dir=getattr(cfg, "harness_dir", ""),
             model=getattr(cfg, "llm_model", "gpt-5"),
             api_mode=getattr(cfg, "api_mode", "auto"),
             workers=getattr(cfg, "workers", 50),
@@ -444,7 +445,7 @@ class IROptimizer:
 
         # Ensure diff testing has been done
         fuzz_bin_dir = dt_dir / "bins"
-        harness_dir = dt_dir / "harness"
+        harness_dir = Path(getattr(cfg, "harness_dir", str(dt_dir / "harness")))
         combined_dir = dt_dir / "combined"
 
         if not (fuzz_bin_dir.is_dir() and any(fuzz_bin_dir.rglob("*_fuzz"))):

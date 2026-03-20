@@ -559,6 +559,7 @@ class DiffTester:
         original_dir: str,
         optimized_dir: str,
         work_dir: str,
+        harness_dir: str = "",
         model: str = "gpt-5",
         api_mode: str = "auto",
         workers: int = 50,
@@ -567,18 +568,27 @@ class DiffTester:
         fuzz_timeout: int = 600,
         fuzz_workers: int = 1,
     ) -> Dict[str, dict]:
-        """End-to-end diff testing.  Returns fuzzing results dict."""
+        """End-to-end diff testing.  Returns fuzzing results dict.
+
+        If *harness_dir* is provided and contains *.fuzz.cc files, skip
+        harness generation and use the given directory directly."""
 
         work = Path(work_dir)
         combined_dir = str(work / "combined")
-        harness_dir = str(work / "harness")
         bin_dir = str(work / "bins")
 
         self.prepare_combined(original_dir, optimized_dir, combined_dir)
-        self.generate_harnesses(
-            combined_dir, harness_dir,
-            model=model, api_mode=api_mode, workers=workers,
-        )
+
+        # Use provided harness dir or generate one
+        if harness_dir and Path(harness_dir).is_dir() and any(Path(harness_dir).glob("*.fuzz.cc")):
+            log(f"Using existing harnesses: {harness_dir}")
+        else:
+            harness_dir = str(work / "harness")
+            self.generate_harnesses(
+                combined_dir, harness_dir,
+                model=model, api_mode=api_mode, workers=workers,
+            )
+
         self.build_binaries(
             combined_dir, harness_dir, bin_dir, workers=build_workers,
         )
