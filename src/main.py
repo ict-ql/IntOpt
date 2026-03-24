@@ -12,7 +12,7 @@ from modules.strategy_mapping import StrategyMapping
 from modules.strategy_refinement import StrategyRefinement
 from modules.llm_client import LLMClient
 from modules.post_processing import PostProcessor
-from modules.diff_testing import DiffTester
+from modules.verification import Verifier
 from modules.perf_testing import PerfTester
 from modules.utils import extract_single_block, log
 
@@ -37,7 +37,7 @@ class Config:
         "gpus": "0,1,2",
     }
 
-    _YAML_SECTIONS = ("model", "llvm", "llm", "run", "diff_testing", "perf_testing")
+    _YAML_SECTIONS = ("model", "llvm", "llm", "run", "diff_testing", "perf_testing", "alive2")
 
     def __init__(self, config_file=None, **kwargs):
         cfg = dict(self._DEFAULTS)
@@ -71,7 +71,7 @@ class IROptimizer:
         self.strategy_refine = StrategyRefinement(opt_bin=config.opt_bin)
         self.llm = LLMClient(base_url=config.base_url, api_key=config.api_key)
         self.post_proc = PostProcessor()
-        self.diff_tester = DiffTester(
+        self.diff_tester = Verifier(
             llm=self.llm,
             llc=getattr(config, "llc",
                         "/home/amax/yangz/Env/llvm-project/build/bin/llc"),
@@ -320,6 +320,8 @@ class IROptimizer:
             return self.diff_test(input_path, output_dir)
         elif mode == "perf_test":
             return self.perf_test(input_path, output_dir)
+        elif mode == "verify":
+            return self.verify(input_path, output_dir)
         else:
             raise SystemExit(f"Invalid mode: {mode}")
 
@@ -425,51 +427,285 @@ class IROptimizer:
         log(f"Fuzzing report: {report}")
 
     # ------------------------------------------------------------------
+    # Verify mode: alive2 → diff_test fallback
+    # ------------------------------------------------------------------
+
+    def verify(self, input_path: str, output_dir: str):
+        """Run alive2 formal verification first; for cases that fail or
+        timeout, fall back to differential testing.
+
+        *input_path* follows the same convention as diff_test().
+        """
+        cfg = self.config
+        work_dir = Path(output_dir) / "verify"
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        combined_dir = work_dir / "combined"
+        alive2_dir = work_dir / "alive2"
+
+        # Resolve original_dir / optimized_dir
+        if ":" in input_path:
+            original_dir, optimized_dir = input_path.split(":", 1)
+        else:
+            optimized_dir = input_path
+            original_dir = getattr(cfg, "ll_dir", "")
+            if not original_dir or not Path(original_dir).is_dir():
+                raise SystemExit(
+                    "Cannot determine original IR directory. Either pass "
+                    "original_dir:optimized_dir or set ll_dir in config."
+                )
+
+        # Step 1: prepare combined IR (reuse if exists)
+        if combined_dir.is_dir() and any(combined_dir.glob("*/combined.ll")):
+            log("Reusing existing combined IR")
+        else:
+            self.diff_tester.prepare_combined(
+                original_dir, optimized_dir, str(combined_dir),
+            )
+
+        # Step 2: run alive2
+        alive2_bin = getattr(cfg, "alive2_bin",
+                             "/home/amax/yangz/Env/alive2/build/alive-tv")
+        alive2_timeout = getattr(cfg, "alive2_timeout", 60)
+        alive2_workers = getattr(cfg, "alive2_workers", 16)
+        alive2_strict = getattr(cfg, "alive2_strict", False)
+
+        alive2_results = self.diff_tester.run_alive2(
+            str(combined_dir), str(alive2_dir),
+            alive2_bin=alive2_bin,
+            timeout=alive2_timeout,
+            workers=alive2_workers,
+            strict=alive2_strict,
+        )
+        self._write_alive2_report(alive2_results, work_dir)
+
+        # Step 3: collect cases that need diff testing (FAIL / TIMEOUT / ERROR)
+        need_diff = {
+            stem for stem, info in alive2_results.items()
+            if info["status"] not in ("PASS",)
+        }
+
+        if not need_diff:
+            log("All cases verified by alive2, no diff testing needed")
+            return str(work_dir)
+
+        log(f"{len(need_diff)} cases need diff testing fallback")
+
+        # Step 4: diff test only the failed/timeout cases
+        dt_dir = work_dir / "diff_test"
+        dt_dir.mkdir(parents=True, exist_ok=True)
+
+        harness_dir = getattr(cfg, "harness_dir", "")
+        fuzz_runs = getattr(cfg, "fuzz_runs", 200000)
+        fuzz_timeout = getattr(cfg, "fuzz_timeout", 600)
+        build_workers = getattr(cfg, "build_workers", 16)
+        fuzz_workers = getattr(cfg, "fuzz_workers", 1)
+
+        # Build a filtered combined dir with only the cases that need testing
+        filtered_combined = dt_dir / "combined"
+        filtered_combined.mkdir(parents=True, exist_ok=True)
+        for stem in need_diff:
+            src = combined_dir / stem
+            dst = filtered_combined / stem
+            if src.is_dir() and not dst.exists():
+                shutil.copytree(str(src), str(dst))
+
+        fuzz_results = self.diff_tester.run_full(
+            original_dir=original_dir,
+            optimized_dir=optimized_dir,
+            work_dir=str(dt_dir),
+            harness_dir=harness_dir,
+            model=getattr(cfg, "llm_model", "gpt-5"),
+            api_mode=getattr(cfg, "api_mode", "auto"),
+            workers=getattr(cfg, "workers", 50),
+            build_workers=build_workers,
+            fuzz_runs=fuzz_runs,
+            fuzz_timeout=fuzz_timeout,
+            fuzz_workers=fuzz_workers,
+        )
+        self._write_fuzz_report(fuzz_results, dt_dir)
+
+        # Step 5: merge results
+        merged = {}
+        for stem, info in alive2_results.items():
+            if info["status"] == "PASS":
+                merged[stem] = {"status": "PASS", "method": "alive2"}
+            elif stem in fuzz_results:
+                merged[stem] = {
+                    "status": fuzz_results[stem]["status"],
+                    "method": "diff_test",
+                    "exit_code": fuzz_results[stem].get("exit_code", -1),
+                }
+            else:
+                merged[stem] = {"status": info["status"], "method": "alive2"}
+
+        self._write_verify_report(merged, work_dir)
+        n_pass = sum(1 for r in merged.values() if r["status"] == "PASS")
+        log(f"Verification complete. PASS={n_pass}/{len(merged)}")
+        return str(work_dir)
+
+    @staticmethod
+    def _write_alive2_report(results: dict, work_dir: Path) -> None:
+        """Write CSV summary of alive2 results."""
+        import csv
+        report = work_dir / "alive2_report.csv"
+        with report.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["file", "status"])
+            w.writeheader()
+            for stem, info in sorted(results.items()):
+                w.writerow({"file": stem, "status": info["status"]})
+        log(f"Alive2 report: {report}")
+
+    @staticmethod
+    def _write_verify_report(results: dict, work_dir: Path) -> None:
+        """Write merged verification report (alive2 + diff_test)."""
+        import csv
+        report = work_dir / "verify_report.csv"
+        with report.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=["file", "status", "method"])
+            w.writeheader()
+            for stem, info in sorted(results.items()):
+                w.writerow({
+                    "file": stem,
+                    "status": info["status"],
+                    "method": info.get("method", ""),
+                })
+        log(f"Verification report: {report}")
+
+    # ------------------------------------------------------------------
     # Performance testing mode
     # ------------------------------------------------------------------
 
     def perf_test(self, input_path: str, output_dir: str):
         """Run performance benchmarking on optimised IR.
 
-        Requires diff testing to have passed first.  If diff_test results
-        already exist under *output_dir*/diff_test/, reuses them; otherwise
-        runs the full diff_test pipeline first.
+        Requires verification (alive2 + diff_test) to have passed first.
+        If verify results already exist under *output_dir*/verify/, reuses
+        them; otherwise runs the full verify pipeline first.
+
+        For cases that only passed via alive2 (no diff_test binary), we
+        build harness + fuzz binary so corpus collection can work.
 
         *input_path* follows the same convention as diff_test().
         """
         cfg = self.config
         work_dir = Path(output_dir)
-        dt_dir = work_dir / "diff_test"
+        verify_dir = work_dir / "verify"
         perf_dir = work_dir / "perf_test"
         perf_dir.mkdir(parents=True, exist_ok=True)
 
-        # Ensure diff testing has been done
-        fuzz_bin_dir = dt_dir / "bins"
-        harness_dir = Path(getattr(cfg, "harness_dir", str(dt_dir / "harness")))
-        combined_dir = dt_dir / "combined"
+        # Ensure verification has been done
+        verify_report = verify_dir / "verify_report.csv"
+        if not verify_report.exists():
+            log("No verify results found, running verify first ...")
+            self.verify(input_path, output_dir)
 
-        if not (fuzz_bin_dir.is_dir() and any(fuzz_bin_dir.rglob("*_fuzz"))):
-            log("No diff-test results found, running diff_test first ...")
-            self.diff_test(input_path, output_dir)
+        if not verify_report.exists():
+            raise SystemExit("Verification did not produce a report")
 
-        if not fuzz_bin_dir.is_dir() or not any(fuzz_bin_dir.rglob("*_fuzz")):
-            raise SystemExit("Diff testing did not produce any fuzzing binaries")
+        # Read verify results — only benchmark cases that passed
+        import csv
+        passed_stems = set()
+        with verify_report.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["status"] == "PASS":
+                    passed_stems.add(row["file"])
+        log(f"Verify: {len(passed_stems)} cases passed, benchmarking only those")
 
-        # Check diff-test results — only benchmark cases that passed
-        fuzz_report = dt_dir / "fuzz_report.csv"
-        passed_stems = None
-        if fuzz_report.exists():
-            import csv
-            with fuzz_report.open("r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                passed_stems = {
-                    row["file"] for row in reader if row["status"] == "PASS"
+        if not passed_stems:
+            log("No cases passed verification, nothing to benchmark")
+            return str(perf_dir)
+
+        # Locate combined IR (always produced by verify)
+        combined_dir = verify_dir / "combined"
+        if not combined_dir.is_dir():
+            raise SystemExit("No combined IR found under verify/")
+
+        # Locate existing fuzz binaries from diff_test (if any)
+        dt_bin_dir = verify_dir / "diff_test" / "bins"
+        if not (dt_bin_dir.is_dir() and any(dt_bin_dir.rglob("*_fuzz"))):
+            dt_bin_dir = work_dir / "diff_test" / "bins"
+
+        # Check which passed stems already have a fuzz binary
+        existing_bins = set()
+        if dt_bin_dir.is_dir():
+            for b in dt_bin_dir.rglob("*_fuzz"):
+                if b.is_file():
+                    existing_bins.add(b.parent.name)
+
+        missing_stems = passed_stems - existing_bins
+
+        # For alive2-only cases, build harness + fuzz binary so corpus
+        # collection works for them too
+        harness_cfg = getattr(cfg, "harness_dir", "")
+        build_workers = getattr(cfg, "build_workers", 16)
+        perf_bin_dir = perf_dir / "fuzz_bins"
+
+        if missing_stems:
+            log(f"{len(missing_stems)} alive2-only cases need fuzz binaries "
+                f"for corpus collection, building ...")
+
+            # Generate harnesses for missing cases only
+            perf_harness_dir = perf_dir / "harness"
+
+            if harness_cfg and Path(harness_cfg).is_dir():
+                # Check if provided harness dir covers the missing stems
+                has_harness = {
+                    p.name[: -len(".fuzz.cc")]
+                    for p in Path(harness_cfg).glob("*.fuzz.cc")
                 }
-            log(f"Diff-test: {len(passed_stems)} cases passed, "
-                f"benchmarking only those")
+                still_missing = missing_stems - has_harness
+                if not still_missing:
+                    perf_harness_dir = Path(harness_cfg)
+                else:
+                    # Generate only for truly missing ones
+                    self.diff_tester.generate_harnesses(
+                        str(combined_dir), str(perf_harness_dir),
+                        model=getattr(cfg, "llm_model", "gpt-5"),
+                        api_mode=getattr(cfg, "api_mode", "auto"),
+                        workers=getattr(cfg, "workers", 50),
+                    )
+            else:
+                self.diff_tester.generate_harnesses(
+                    str(combined_dir), str(perf_harness_dir),
+                    model=getattr(cfg, "llm_model", "gpt-5"),
+                    api_mode=getattr(cfg, "api_mode", "auto"),
+                    workers=getattr(cfg, "workers", 50),
+                )
+
+            self.diff_tester.build_binaries(
+                str(combined_dir), str(perf_harness_dir), str(perf_bin_dir),
+                workers=build_workers,
+            )
+
+        # Merge all fuzz binary dirs: existing diff_test bins + newly built
+        # Use a unified dir so perf_tester sees everything
+        unified_bin_dir = perf_dir / "all_fuzz_bins"
+        unified_bin_dir.mkdir(parents=True, exist_ok=True)
+
+        # Symlink existing bins
+        if dt_bin_dir.is_dir():
+            for stem_dir in dt_bin_dir.iterdir():
+                if stem_dir.is_dir() and stem_dir.name in passed_stems:
+                    dst = unified_bin_dir / stem_dir.name
+                    if not dst.exists():
+                        dst.symlink_to(stem_dir.resolve())
+
+        # Symlink newly built bins
+        if perf_bin_dir.is_dir():
+            for stem_dir in perf_bin_dir.iterdir():
+                if stem_dir.is_dir() and stem_dir.name in passed_stems:
+                    dst = unified_bin_dir / stem_dir.name
+                    if not dst.exists():
+                        dst.symlink_to(stem_dir.resolve())
+
+        harness_dir = Path(harness_cfg) if harness_cfg and Path(harness_cfg).is_dir() else (
+            perf_dir / "harness" if (perf_dir / "harness").is_dir() else
+            verify_dir / "diff_test" / "harness"
+        )
 
         # Run perf pipeline
-        build_workers = getattr(cfg, "build_workers", 16)
         corpus_time = getattr(cfg, "corpus_time", 10)
         corpus_workers = getattr(cfg, "corpus_workers", 0)
         bench_iters = getattr(cfg, "bench_iters", 1000000)
@@ -480,7 +716,7 @@ class IROptimizer:
         results = self.perf_tester.run_full(
             combined_dir=str(combined_dir),
             harness_dir=str(harness_dir),
-            fuzz_bin_dir=str(fuzz_bin_dir),
+            fuzz_bin_dir=str(unified_bin_dir),
             work_dir=str(perf_dir),
             corpus_dir=corpus_dir,
             corpus_time=corpus_time,
@@ -491,11 +727,10 @@ class IROptimizer:
             bench_workers=bench_workers,
         )
 
-        # Filter to only diff-test-passed cases if we have the report
-        if passed_stems is not None:
-            results = {
-                k: v for k, v in results.items() if k in passed_stems
-            }
+        # Filter to only verified-passed cases
+        results = {
+            k: v for k, v in results.items() if k in passed_stems
+        }
 
         self._write_perf_report(results, perf_dir)
         return str(perf_dir)
@@ -554,7 +789,7 @@ class IROptimizer:
 
 def parse_args():
     p = argparse.ArgumentParser(description="LLVM IR Optimizer")
-    p.add_argument("--mode", choices=["single", "batch", "diff_test", "perf_test"], required=True)
+    p.add_argument("--mode", choices=["single", "batch", "diff_test", "perf_test", "verify"], required=True)
     p.add_argument("--input", required=True,
                    help="Input .ll file (single), directory (batch), "
                         "or original_dir:optimized_dir (diff_test)")

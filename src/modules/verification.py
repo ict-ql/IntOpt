@@ -1,5 +1,11 @@
-"""Differential testing: generate libFuzzer harnesses for (original, optimised)
-IR pairs, compile them into binaries, and run fuzzing to detect mismatches."""
+"""Correctness verification for optimised IR.
+
+Provides two verification strategies:
+  1. Alive2 (alive-tv) — formal translation validation
+  2. Differential testing — libFuzzer-based runtime comparison
+
+Typical flow: run alive2 first (fast, formal); for cases that fail or
+timeout, fall back to differential testing (slower, empirical)."""
 
 import re
 import subprocess
@@ -264,6 +270,55 @@ def _build_one(
 
 
 # ======================================================================
+# Alive2 (alive-tv) runner
+# ======================================================================
+
+def _run_alive2_one(
+    combined_ll: Path,
+    alive2_bin: str,
+    src_fn: str,
+    tgt_fn: str,
+    timeout: int = 60,
+    strict: bool = False,
+) -> Tuple[str, str]:
+    """Run alive-tv on a single combined.ll file.
+
+    Returns (status, log_text) where status is one of:
+      "PASS"    — transformation verified correct
+      "FAIL"    — alive2 found a counter-example
+      "TIMEOUT" — alive2 exceeded the time limit
+      "ERROR"   — alive2 crashed or could not run
+    """
+    cmd = [alive2_bin, str(combined_ll),
+           f"--src-fn={src_fn}", f"--tgt-fn={tgt_fn}"]
+    log_text = f"CMD: {' '.join(cmd)}\n"
+
+    try:
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="replace", timeout=timeout,
+        )
+        log_text += f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}\nrc={proc.returncode}\n"
+
+        ok_phrase = "Transformation seems to be correct!"
+        if strict:
+            if proc.returncode == 0 and ok_phrase in proc.stdout:
+                return "PASS", log_text
+            return "FAIL", log_text
+        else:
+            if ok_phrase in proc.stdout:
+                return "PASS", log_text
+            return "FAIL", log_text
+
+    except subprocess.TimeoutExpired:
+        log_text += "ERROR: Alive2 Timeout\n"
+        return "TIMEOUT", log_text
+    except Exception as e:
+        log_text += f"ERROR: {e}\n"
+        return "ERROR", log_text
+
+
+# ======================================================================
 # Fuzzing runner
 # ======================================================================
 
@@ -297,8 +352,8 @@ def _run_fuzz_bin(
 # Main class
 # ======================================================================
 
-class DiffTester:
-    """Orchestrates harness generation, compilation, and fuzzing."""
+class Verifier:
+    """Orchestrates alive2 verification, harness generation, compilation, and fuzzing."""
 
     def __init__(
         self,
@@ -309,6 +364,95 @@ class DiffTester:
         self.llm = llm
         self.llc = llc
         self.clangxx = clangxx
+
+    # ------------------------------------------------------------------
+    # Alive2 formal verification
+    # ------------------------------------------------------------------
+
+    def run_alive2(
+        self,
+        combined_dir: str,
+        out_dir: str,
+        alive2_bin: str,
+        timeout: int = 60,
+        workers: int = 16,
+        strict: bool = False,
+    ) -> Dict[str, dict]:
+        """Run alive-tv on each <stem>/combined.ll.
+
+        For each combined IR, extracts the two function names (src and
+        src_opt) and invokes alive-tv with --src-fn / --tgt-fn.
+
+        Returns dict mapping stem → {status, log_file}.
+        """
+        combined_p = Path(combined_dir)
+        out_p = Path(out_dir)
+        out_p.mkdir(parents=True, exist_ok=True)
+
+        ll_files = sorted(combined_p.glob("*/combined.ll"))
+        if not ll_files:
+            raise SystemExit(f"No combined.ll files found under {combined_p}")
+
+        # Build job list: (stem, combined_ll, src_fn, tgt_fn)
+        jobs: List[Tuple[str, Path, str, str]] = []
+        skip: Dict[str, dict] = {}
+        for ll_file in ll_files:
+            stem = ll_file.parent.name
+            ir_text = ll_file.read_text(encoding="utf-8", errors="ignore")
+            _, defs = _parse_ir_structure(ir_text)
+            if len(defs) < 2:
+                skip[stem] = {"status": "PARSE_ERROR"}
+                log(f"  {stem}: <2 functions in combined.ll, skipping")
+                continue
+            src_fn = _extract_func_name(defs[0])
+            tgt_fn = _extract_func_name(defs[1])
+            if not src_fn or not tgt_fn:
+                skip[stem] = {"status": "PARSE_ERROR"}
+                log(f"  {stem}: could not extract function names, skipping")
+                continue
+            jobs.append((stem, ll_file, src_fn, tgt_fn))
+
+        log(f"Running alive2 on {len(jobs)} cases "
+            f"(timeout={timeout}s, workers={workers}, strict={strict}) ...")
+
+        results: Dict[str, dict] = dict(skip)
+
+        def _do_one(stem, ll_file, src_fn, tgt_fn):
+            status, log_text = _run_alive2_one(
+                ll_file, alive2_bin, src_fn, tgt_fn,
+                timeout=timeout, strict=strict,
+            )
+            # Save per-case log
+            case_dir = out_p / stem
+            case_dir.mkdir(parents=True, exist_ok=True)
+            (case_dir / "alive2_log.txt").write_text(log_text, encoding="utf-8")
+            return stem, status
+
+        if workers <= 1:
+            for i, (stem, ll_file, src_fn, tgt_fn) in enumerate(jobs, 1):
+                stem, status = _do_one(stem, ll_file, src_fn, tgt_fn)
+                results[stem] = {"status": status, "log_file": str(out_p / stem / "alive2_log.txt")}
+                log(f"  [{i}/{len(jobs)}] {stem}: {status}")
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {
+                    ex.submit(_do_one, s, ll, sf, tf): s
+                    for s, ll, sf, tf in jobs
+                }
+                done = 0
+                for fut in as_completed(futs):
+                    done += 1
+                    stem, status = fut.result()
+                    results[stem] = {"status": status, "log_file": str(out_p / stem / "alive2_log.txt")}
+                    log(f"  [{done}/{len(jobs)}] {stem}: {status}")
+
+        n_pass = sum(1 for r in results.values() if r["status"] == "PASS")
+        n_fail = sum(1 for r in results.values() if r["status"] == "FAIL")
+        n_timeout = sum(1 for r in results.values() if r["status"] == "TIMEOUT")
+        n_other = len(results) - n_pass - n_fail - n_timeout
+        log(f"Alive2 done. PASS={n_pass}  FAIL={n_fail}  "
+            f"TIMEOUT={n_timeout}  OTHER={n_other}")
+        return results
 
     # ------------------------------------------------------------------
     # Step A: prepare combined IR files
