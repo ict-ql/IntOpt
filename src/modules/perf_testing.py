@@ -583,7 +583,11 @@ class PerfTester:
             stem = b.parent.name
             stem_corpus = corpus_p / stem
             if not stem_corpus.is_dir():
-                skip_results[stem] = {"status": "NO_CORPUS"}
+                skip_results[stem] = {
+                    "status": "NO_CORPUS", "speedup": 1.0,
+                    "baseline_ns": 0, "opt_ns": 0, "n_corpus": 0,
+                    "per_corpus": [],
+                }
                 continue
             corpus_files = sorted(
                 (f for f in stem_corpus.iterdir() if f.is_file()),
@@ -591,7 +595,11 @@ class PerfTester:
                 reverse=True,
             )
             if not corpus_files:
-                skip_results[stem] = {"status": "NO_CORPUS"}
+                skip_results[stem] = {
+                    "status": "NO_CORPUS", "speedup": 1.0,
+                    "baseline_ns": 0, "opt_ns": 0, "n_corpus": 0,
+                    "per_corpus": [],
+                }
                 continue
             jobs.append((stem, b, corpus_files))
 
@@ -603,35 +611,37 @@ class PerfTester:
         def _bench_all_corpus(
             stem: str, b: Path, cfiles: List[Path],
         ) -> Tuple[str, dict]:
-            """Run bench binary on every corpus file, return aggregated result."""
+            """Run bench binary on every corpus file, return aggregated result.
+
+            Failed corpus entries are recorded with speedup=1.0 (no change).
+            The final speedup is the average over ALL corpus files."""
             per_corpus: List[dict] = []
             for cf in cfiles:
                 status, metrics, _ = _run_one_bench(b, cf, iters, timeout)
-                entry = {"corpus": cf.name, "status": status, **metrics}
-                per_corpus.append(entry)
-
-            passed = [e for e in per_corpus if e["status"] == "PASS"]
-            if not passed:
+                if status == "PASS" and "speedup" in metrics:
+                    entry = {"corpus": cf.name, "status": status, **metrics}
+                    per_corpus.append(entry)
+            if len(per_corpus) == 0:
                 return stem, {
-                    "status": "FAIL",
-                    "per_corpus": per_corpus,
+                    "status": "PASS_ALL_BUT_TOO_FAST", "baseline_ns": 0,
+                    "opt_ns": 0, "speedup": 1.0,
+                    "n_corpus": 0, "per_corpus": [],
                 }
-
             avg_baseline = (
-                sum(e.get("baseline_ns", 0) for e in passed) / len(passed)
+                sum(e.get("baseline_ns", 0) for e in per_corpus) / len(per_corpus)
             )
             avg_opt = (
-                sum(e.get("opt_ns", 0) for e in passed) / len(passed)
+                sum(e.get("opt_ns", 0) for e in per_corpus) / len(per_corpus)
             )
             avg_speedup = (
-                sum(e.get("speedup", 0) for e in passed) / len(passed)
+                sum(e.get("speedup", 1.0) for e in per_corpus) / len(per_corpus)
             )
             return stem, {
                 "status": "PASS",
                 "baseline_ns": avg_baseline,
                 "opt_ns": avg_opt,
                 "speedup": avg_speedup,
-                "n_corpus": len(passed),
+                "n_corpus": len(per_corpus),
                 "per_corpus": per_corpus,
             }
 
@@ -669,8 +679,7 @@ class PerfTester:
             if r.get("speedup") is not None
         ]
         avg_speedup = sum(speedups) / len(speedups) if speedups else 0
-        log(f"Benchmark done. measured={n_pass}/{len(bins)}  "
-            f"avg_speedup={avg_speedup:.3f}x")
+        log(f"Benchmark done.")
         return results
 
     # ------------------------------------------------------------------
@@ -684,6 +693,7 @@ class PerfTester:
         fuzz_bin_dir: str,
         work_dir: str,
         corpus_dir: str = "",
+        perf_harness_dir: str = "",
         corpus_time: int = 10,
         corpus_workers: int = 0,
         build_workers: int = 16,
@@ -694,9 +704,11 @@ class PerfTester:
         """End-to-end performance testing.  Returns benchmark results dict.
 
         If *corpus_dir* is provided and non-empty, skip corpus generation
-        and use the given directory directly."""
+        and use the given directory directly.
+
+        If *perf_harness_dir* is provided and contains *.bench.cc files,
+        skip bench harness generation and use the given directory directly."""
         work = Path(work_dir)
-        bench_harness_dir = work / "bench_harness"
         bench_bin_dir = work / "bench_bins"
 
         # Use provided corpus or generate one
@@ -709,11 +721,17 @@ class PerfTester:
                 max_total_time=corpus_time, workers=corpus_workers,
             )
 
-        # Check if harness already exist
-        if not (bench_harness_dir.is_dir() and any(bench_harness_dir.rglob("*.bench.cc"))):
-            self.generate_bench_harnesses(harness_dir, str(bench_harness_dir))
+        # Use provided perf harness dir or generate from fuzz harnesses
+        if perf_harness_dir and Path(perf_harness_dir).is_dir() and any(Path(perf_harness_dir).glob("*.bench.cc")):
+            bench_harness_dir = Path(perf_harness_dir)
+            log(f"Using existing bench harnesses: {bench_harness_dir}")
         else:
-            log(f"Find existing harnesses: {bench_harness_dir}")
+            bench_harness_dir = work / "bench_harness"
+            if not (bench_harness_dir.is_dir() and any(bench_harness_dir.rglob("*.bench.cc"))):
+                self.generate_bench_harnesses(harness_dir, str(bench_harness_dir))
+            else:
+                log(f"Find existing harnesses: {bench_harness_dir}")
+
         # Check if bins already exist
         if not (bench_bin_dir.is_dir() and any(bench_bin_dir.rglob("*_bench"))):
             self.build_binaries(

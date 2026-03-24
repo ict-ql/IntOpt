@@ -603,15 +603,18 @@ class IROptimizer:
         if not verify_report.exists():
             raise SystemExit("Verification did not produce a report")
 
-        # Read verify results — only benchmark cases that passed
+        # Read verify results
         import csv
         passed_stems = set()
+        all_stems = set()
         with verify_report.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
+                all_stems.add(row["file"])
                 if row["status"] == "PASS":
                     passed_stems.add(row["file"])
-        log(f"Verify: {len(passed_stems)} cases passed, benchmarking only those")
+        log(f"Verify: {len(passed_stems)}/{len(all_stems)} cases passed, "
+            f"benchmarking passed cases only")
 
         if not passed_stems:
             log("No cases passed verification, nothing to benchmark")
@@ -712,6 +715,7 @@ class IROptimizer:
         bench_timeout = getattr(cfg, "bench_timeout", 300)
         bench_workers = getattr(cfg, "bench_workers", 1)
         corpus_dir = getattr(cfg, "corpus_dir", "")
+        perf_harness_dir = getattr(cfg, "perf_harness_dir", "")
 
         results = self.perf_tester.run_full(
             combined_dir=str(combined_dir),
@@ -719,6 +723,7 @@ class IROptimizer:
             fuzz_bin_dir=str(unified_bin_dir),
             work_dir=str(perf_dir),
             corpus_dir=corpus_dir,
+            perf_harness_dir=perf_harness_dir,
             corpus_time=corpus_time,
             corpus_workers=corpus_workers,
             build_workers=build_workers,
@@ -727,10 +732,33 @@ class IROptimizer:
             bench_workers=bench_workers,
         )
 
-        # Filter to only verified-passed cases
-        results = {
-            k: v for k, v in results.items() if k in passed_stems
-        }
+        # Ensure all passed_stems have an entry; missing ones get speedup=1
+        filtered = {}
+        for stem in passed_stems:
+            if stem in results:
+                filtered[stem] = results[stem]
+            else:
+                filtered[stem] = {
+                    "status": "NO_BENCH",
+                    "speedup": 1.0,
+                    "baseline_ns": 0,
+                    "opt_ns": 0,
+                    "n_corpus": 0,
+                    "per_corpus": [],
+                }
+        results = filtered
+
+        # Add verify-failed cases with speedup=0
+        failed_stems = all_stems - passed_stems
+        for stem in failed_stems:
+            results[stem] = {
+                "status": "VERIFY_FAIL",
+                "speedup": 0,
+                "baseline_ns": 0,
+                "opt_ns": 0,
+                "n_corpus": 0,
+                "per_corpus": [],
+            }
 
         self._write_perf_report(results, perf_dir)
         return str(perf_dir)
