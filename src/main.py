@@ -290,7 +290,7 @@ class IROptimizer:
         # Step 5
         log("Step 5: Post-processing")
         realize_dir = self.post_proc.run(in_dir=realize_dir)
-
+        
         # Extract final .ll files
         pred_files = list(Path(realize_dir).glob("*.model.predict.ll"))
         if pred_files:
