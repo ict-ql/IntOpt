@@ -771,6 +771,137 @@ class IROptimizer:
             }))
             return str(perf_dir)
 
+        elif step == 9:
+            # Apply optimized IR back to original file + opt verify
+            # Expects --input to be the ORIGINAL full .ll file path
+            # (the extension passes the original source file)
+            import subprocess as _sp
+
+            log("Step 8: Apply optimized IR to original")
+            stem = input_path.stem
+            output_file = output_path / f"{stem}.optimized.ll"
+            if not output_file.exists():
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 9, "status": "fail",
+                    "title": "Apply",
+                    "content": "No optimized IR found",
+                }))
+                return None
+
+            opt_bin = getattr(cfg, "opt_bin",
+                              "/home/amax/yangz/Env/llvm-project/build/bin/opt")
+            llvm_link = opt_bin.replace("/opt", "/llvm-link")
+            llvm_extract = opt_bin.replace("/opt", "/llvm-extract")
+            llvm_as = opt_bin.replace("/opt", "/llvm-as")
+            llvm_dis = opt_bin.replace("/opt", "/llvm-dis")
+
+            apply_dir = temp / "apply"
+            apply_dir.mkdir(parents=True, exist_ok=True)
+
+            orig_file = str(input_path)
+            opt_file = str(output_file)
+            merged_ll = str(apply_dir / f"{stem}.merged.ll")
+            summary_parts = []
+
+            # Step A: extract function names from optimized IR to know what to replace
+            opt_ir = output_file.read_text(encoding="utf-8")
+            from modules.verification import _parse_ir_structure, _extract_func_name
+            _, opt_defs = _parse_ir_structure(opt_ir)
+            func_names = []
+            for d in opt_defs:
+                fn = _extract_func_name(d)
+                if fn:
+                    func_names.append(fn)
+
+            if not func_names:
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 9, "status": "fail",
+                    "title": "Apply",
+                    "content": "No function definitions found in optimized IR",
+                }))
+                return None
+
+            summary_parts.append(f"Functions to replace: {', '.join(func_names)}")
+
+            # Step B: assemble both to .bc
+            orig_bc = str(apply_dir / "orig.bc")
+            opt_bc = str(apply_dir / "opt.bc")
+            stripped_bc = str(apply_dir / "stripped.bc")
+
+            def _run(cmd):
+                r = _sp.run(cmd, capture_output=True, text=True, timeout=60)
+                return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+            rc, out = _run([llvm_as, orig_file, "-o", orig_bc])
+            if rc != 0:
+                summary_parts.append(f"llvm-as (original) failed: {out[:500]}")
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 9, "status": "fail",
+                    "title": "Apply: llvm-as failed",
+                    "content": "\n".join(summary_parts),
+                }))
+                return None
+
+            rc, out = _run([llvm_as, opt_file, "-o", opt_bc])
+            if rc != 0:
+                summary_parts.append(f"llvm-as (optimized) failed: {out[:500]}")
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 9, "status": "fail",
+                    "title": "Apply: llvm-as failed",
+                    "content": "\n".join(summary_parts),
+                }))
+                return None
+
+            # Step C: strip the original functions from orig.bc
+            delete_args = []
+            for fn in func_names:
+                delete_args.extend(["--delete", f"--func={fn}"])
+            rc, out = _run([llvm_extract, *delete_args, orig_bc, "-o", stripped_bc])
+            if rc != 0:
+                summary_parts.append(f"llvm-extract --delete failed: {out[:500]}")
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 9, "status": "fail",
+                    "title": "Apply: llvm-extract failed",
+                    "content": "\n".join(summary_parts),
+                }))
+                return None
+
+            # Step D: llvm-link stripped + optimized
+            linked_bc = str(apply_dir / "linked.bc")
+            rc, out = _run([llvm_link, stripped_bc, opt_bc, "-o", linked_bc])
+            if rc != 0:
+                summary_parts.append(f"llvm-link failed: {out[:500]}")
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 9, "status": "fail",
+                    "title": "Apply: llvm-link failed",
+                    "content": "\n".join(summary_parts),
+                }))
+                return None
+
+            # Step E: disassemble back to .ll
+            rc, out = _run([llvm_dis, linked_bc, "-o", merged_ll])
+            if rc != 0:
+                summary_parts.append(f"llvm-dis failed: {out[:500]}")
+
+            # Step F: run opt -passes='verify'
+            rc, out = _run([opt_bin, "-passes=verify", "-disable-output", merged_ll])
+            verify_ok = (rc == 0)
+            if verify_ok:
+                summary_parts.append("opt -passes='verify': PASS ✅")
+            else:
+                summary_parts.append(f"opt -passes='verify': FAIL ❌\n{out[:1000]}")
+
+            log("STEP_RESULT:" + json.dumps({
+                "step": 9,
+                "status": "ok" if verify_ok else "fail",
+                "title": f"Apply & Verify: {'PASS' if verify_ok else 'FAIL'}",
+                "content": "\n".join(summary_parts),
+                "content_type": "text",
+                "output_file": merged_ll,
+                "verify_ok": verify_ok,
+            }))
+            return merged_ll
+
         else:
             raise SystemExit(f"Invalid step: {step}")
 

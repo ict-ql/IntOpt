@@ -320,7 +320,7 @@ class ChatPanel {
     dispose() { this.panel.dispose(); }
 }
 // ── Interactive pipeline orchestrator ────────────────────
-async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel) {
+async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel, originalSourceFile) {
     const stem = path.basename(inputFile, ".ll");
     // Steps 0-6: optimization pipeline
     for (let step = 0; step <= 6; step++) {
@@ -459,6 +459,54 @@ async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel)
     else {
         chat.addUser("Skip verification");
     }
+    // Apply to original IR? (only in selection mode)
+    if (originalSourceFile) {
+        const applyChoice = await chat.waitForChoice("Apply to Original IR?", "Replace the selected functions in the original .ll file with the optimized versions and run opt -passes='verify'?");
+        if (applyChoice === "yes") {
+            chat.addUser("Yes, apply to original");
+            chat.addSystem("Applying optimized IR to original file ...");
+            // Step 9 uses --input as the ORIGINAL source file
+            const { result: aResult, logs: aLogs } = await runStep(originalSourceFile, outputDir, 9, outputChannel);
+            if (!aResult) {
+                chat.showError(`Apply failed.\n` +
+                    (aLogs.length > 0 ? aLogs.slice(-5).join("\n") : "No output"));
+            }
+            else {
+                chat.addAssistant(`<div class="step-title">${escHtml(aResult.title || "Apply")}</div>` +
+                    `<pre class="code-block">${escHtml(aResult.content || "")}</pre>`);
+                const verifyOk = aResult.verify_ok;
+                const mergedFile = aResult.output_file || "";
+                if (verifyOk && mergedFile) {
+                    // Offer to open or replace original
+                    const replaceChoice = await chat.waitForChoice("Replace Original File?", `opt verify passed. Replace ${path.basename(originalSourceFile)} with the merged IR?`);
+                    if (replaceChoice === "yes") {
+                        chat.addUser("Yes, replace original");
+                        try {
+                            fs.copyFileSync(mergedFile, originalSourceFile);
+                            chat.addSystem(`✅ Replaced ${originalSourceFile}`);
+                            const doc = await vscode.workspace.openTextDocument(originalSourceFile);
+                            await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+                        }
+                        catch (e) {
+                            chat.showError(`Failed to replace: ${e.message}`);
+                        }
+                    }
+                    else {
+                        chat.addUser("Skip replacing");
+                        if (mergedFile) {
+                            chat.addSystem(`Merged IR saved at: ${mergedFile}`);
+                        }
+                    }
+                }
+                else if (mergedFile) {
+                    chat.addSystem(`Merged IR saved at: ${mergedFile} (verify failed, not replacing original)`);
+                }
+            }
+        }
+        else {
+            chat.addUser("Skip applying");
+        }
+    }
     chat.addSystem("Pipeline complete.");
 }
 // ── llvm-extract ─────────────────────────────────────────
@@ -523,7 +571,7 @@ function activate(context) {
             chat.addSystem("llvm-extract failed, using raw selection as input");
             fs.writeFileSync(extractedFile, selectedText, "utf-8");
         }
-        await runInteractivePipeline(extractedFile, outputDir, chat, outputChannel);
+        await runInteractivePipeline(extractedFile, outputDir, chat, outputChannel, sourceFile);
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intopt.optimizeFile", async () => {
         const editor = vscode.window.activeTextEditor;

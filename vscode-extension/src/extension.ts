@@ -349,7 +349,8 @@ class ChatPanel {
 
 async function runInteractivePipeline(
   inputFile: string, outputDir: string,
-  chat: ChatPanel, outputChannel: vscode.OutputChannel
+  chat: ChatPanel, outputChannel: vscode.OutputChannel,
+  originalSourceFile?: string,  // set in selection mode: the full .ll before extraction
 ) {
   const stem = path.basename(inputFile, ".ll");
 
@@ -539,6 +540,68 @@ async function runInteractivePipeline(
     chat.addUser("Skip verification");
   }
 
+  // Apply to original IR? (only in selection mode)
+  if (originalSourceFile) {
+    const applyChoice = await chat.waitForChoice(
+      "Apply to Original IR?",
+      "Replace the selected functions in the original .ll file with the optimized versions and run opt -passes='verify'?"
+    );
+
+    if (applyChoice === "yes") {
+      chat.addUser("Yes, apply to original");
+      chat.addSystem("Applying optimized IR to original file ...");
+
+      // Step 9 uses --input as the ORIGINAL source file
+      const { result: aResult, logs: aLogs } = await runStep(
+        originalSourceFile, outputDir, 9, outputChannel
+      );
+
+      if (!aResult) {
+        chat.showError(
+          `Apply failed.\n` +
+          (aLogs.length > 0 ? aLogs.slice(-5).join("\n") : "No output")
+        );
+      } else {
+        chat.addAssistant(
+          `<div class="step-title">${escHtml(aResult.title || "Apply")}</div>` +
+          `<pre class="code-block">${escHtml(aResult.content || "")}</pre>`
+        );
+
+        const verifyOk = (aResult as any).verify_ok;
+        const mergedFile = aResult.output_file || "";
+
+        if (verifyOk && mergedFile) {
+          // Offer to open or replace original
+          const replaceChoice = await chat.waitForChoice(
+            "Replace Original File?",
+            `opt verify passed. Replace ${path.basename(originalSourceFile)} with the merged IR?`
+          );
+
+          if (replaceChoice === "yes") {
+            chat.addUser("Yes, replace original");
+            try {
+              fs.copyFileSync(mergedFile, originalSourceFile);
+              chat.addSystem(`✅ Replaced ${originalSourceFile}`);
+              const doc = await vscode.workspace.openTextDocument(originalSourceFile);
+              await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+            } catch (e: any) {
+              chat.showError(`Failed to replace: ${e.message}`);
+            }
+          } else {
+            chat.addUser("Skip replacing");
+            if (mergedFile) {
+              chat.addSystem(`Merged IR saved at: ${mergedFile}`);
+            }
+          }
+        } else if (mergedFile) {
+          chat.addSystem(`Merged IR saved at: ${mergedFile} (verify failed, not replacing original)`);
+        }
+      }
+    } else {
+      chat.addUser("Skip applying");
+    }
+  }
+
   chat.addSystem("Pipeline complete.");
 }
 
@@ -614,7 +677,7 @@ export function activate(context: vscode.ExtensionContext) {
         fs.writeFileSync(extractedFile, selectedText, "utf-8");
       }
 
-      await runInteractivePipeline(extractedFile, outputDir, chat, outputChannel);
+      await runInteractivePipeline(extractedFile, outputDir, chat, outputChannel, sourceFile);
     })
   );
 
