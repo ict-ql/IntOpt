@@ -371,11 +371,12 @@ class IROptimizer:
                 batch_size=1,
                 gpus=cfg.gpus,
             )
-            # Read the generated strategy
+            # Read the generated strategy — extract <code> block content
             pred_files = list(Path(initial_dir).glob("*.model.predict.ll"))
             content = ""
             if pred_files:
-                content = pred_files[0].read_text(encoding="utf-8")
+                raw = pred_files[0].read_text(encoding="utf-8")
+                content = extract_single_block(raw, "code") or raw
             log("STEP_RESULT:" + json.dumps({
                 "step": 1, "status": "ok",
                 "title": "Initial Optimization Strategy",
@@ -386,7 +387,7 @@ class IROptimizer:
             return str(initial_dir)
 
         elif step == 2:
-            # Strategy mapping
+            # Strategy mapping — produces prompt with <analysis> block
             initial_dir = str(temp / "step1_initial")
             log("Step 2: Strategy mapping")
             mapping_dir = self.strategy_map.map_strategies(
@@ -398,22 +399,27 @@ class IROptimizer:
             # Read the mapping/analysis result (the prompt file has analysis)
             prompt_files = list(Path(mapping_dir).glob("*.prompt.ll"))
             content = ""
+            analysis = ""
             if prompt_files:
-                content = prompt_files[0].read_text(encoding="utf-8")
+                raw = prompt_files[0].read_text(encoding="utf-8")
+                content = raw
+                analysis = extract_single_block(raw, "analysis") or ""
             log("STEP_RESULT:" + json.dumps({
                 "step": 2, "status": "ok",
                 "title": "Strategy Mapping & Analysis",
                 "content": content,
+                "analysis": analysis,
                 "file": str(prompt_files[0]) if prompt_files else "",
                 "dir": str(mapping_dir),
             }))
             return str(mapping_dir)
 
         elif step == 3:
-            # Strategy refinement + LLM refinement
+            # Step 3a: Strategy refinement — build prompt with analysis
+            # (LLM call is deferred to step 3b so user can edit analysis first)
             mapping_dir = str(temp / "step2_mapping")
             initial_dir = str(temp / "step1_initial")
-            log("Step 3: Strategy refinement")
+            log("Step 3: Strategy refinement (building prompt)")
             refine_dir = self.strategy_refine.refine(
                 in_dir=mapping_dir,
                 ll_dir=str(dataset_dir),
@@ -422,7 +428,29 @@ class IROptimizer:
                 timeout=cfg.timeout,
                 verify_timeout=cfg.verify_timeout,
             )
-            # LLM-based refinement
+
+            # Output analysis from prompt for user review BEFORE LLM call
+            prompt_files = list(Path(refine_dir).glob("*.prompt.ll"))
+            analysis = ""
+            prompt_file = ""
+            if prompt_files:
+                prompt_file = str(prompt_files[0])
+                raw = prompt_files[0].read_text(encoding="utf-8")
+                analysis = extract_single_block(raw, "analysis") or ""
+
+            log("STEP_RESULT:" + json.dumps({
+                "step": 3, "status": "ok",
+                "title": "Analysis Information (editable before LLM refinement)",
+                "content": analysis,
+                "file": prompt_file,
+                "dir": str(refine_dir),
+            }))
+            return str(refine_dir)
+
+        elif step == 4:
+            # Step 3b: LLM-based strategy refinement (uses the prompt user may have edited)
+            refine_dir = str(temp / "step3_refinement")
+            log("Step 3b: LLM strategy refinement")
             refine_dir = self.llm.batch_query(
                 in_dir=refine_dir,
                 out_dir=refine_dir,
@@ -430,21 +458,22 @@ class IROptimizer:
                 api_mode=cfg.api_mode,
                 workers=1,
             )
-            # Read refined strategy
+            # Show only <advice> block from refined strategy
             pred_files = list(Path(refine_dir).glob("*.model.predict.ll"))
-            content = ""
+            advice = ""
             if pred_files:
-                content = pred_files[0].read_text(encoding="utf-8")
+                raw = pred_files[0].read_text(encoding="utf-8")
+                advice = extract_single_block(raw, "advice") or ""
             log("STEP_RESULT:" + json.dumps({
-                "step": 3, "status": "ok",
-                "title": "Refined Optimization Strategy",
-                "content": content,
+                "step": 4, "status": "ok",
+                "title": "Refined Optimization Strategy (Advice)",
+                "content": advice,
                 "file": str(pred_files[0]) if pred_files else "",
                 "dir": str(refine_dir),
             }))
             return str(refine_dir)
 
-        elif step == 4:
+        elif step == 5:
             # LLM realization
             refine_dir = str(temp / "step3_refinement")
             log("Step 4: LLM realization")
@@ -457,21 +486,22 @@ class IROptimizer:
                 api_mode=cfg.api_mode,
                 workers=1,
             )
-            # Read generated IR
+            # Show only <code> block from generated IR
             pred_files = list(Path(realize_dir).glob("*.model.predict.ll"))
-            content = ""
+            code = ""
             if pred_files:
-                content = pred_files[0].read_text(encoding="utf-8")
+                raw = pred_files[0].read_text(encoding="utf-8")
+                code = extract_single_block(raw, "code") or raw
             log("STEP_RESULT:" + json.dumps({
-                "step": 4, "status": "ok",
+                "step": 5, "status": "ok",
                 "title": "LLM-Generated Optimized IR",
-                "content": content,
+                "content": code,
                 "file": str(pred_files[0]) if pred_files else "",
                 "dir": str(realize_dir),
             }))
             return str(realize_dir)
 
-        elif step == 5:
+        elif step == 6:
             # Post-processing + extract
             realize_dir = str(temp / "step4_realization")
             log("Step 5: Post-processing")

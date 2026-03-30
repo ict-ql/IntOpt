@@ -55,13 +55,19 @@ interface StepResult {
   dir?: string;
   output_file?: string;
   message?: string;
+  analysis?: string;
+}
+
+interface AnalysisResult {
+  analysis: string;
+  prompt_file: string;
 }
 
 
 function runStep(
   inputFile: string, outputDir: string, step: number,
   outputChannel: vscode.OutputChannel
-): Promise<{ result: StepResult | null; logs: string[] }> {
+): Promise<{ result: StepResult | null; analysisResult: AnalysisResult | null; logs: string[] }> {
   const pythonPath = cfg("pythonPath", "python");
   const projectRoot = cfg("projectRoot", "/home/amax/yangz/intop");
   const configFile = cfg("configFile", path.join(projectRoot, "config", "config.yaml"));
@@ -98,19 +104,26 @@ function runStep(
     proc.stderr?.on("data", handle);
 
     proc.on("close", () => {
-      // Parse STEP_RESULT from output
+      // Parse STEP_RESULT and STEP_RESULT_ANALYSIS from output
       const marker = "STEP_RESULT:";
+      const analysisMarker = "STEP_RESULT_ANALYSIS:";
       let result: StepResult | null = null;
+      let analysisResult: AnalysisResult | null = null;
       for (const line of allOutput.split("\n")) {
         const idx = line.indexOf(marker);
-        if (idx >= 0) {
+        if (idx >= 0 && !line.includes(analysisMarker)) {
           try { result = JSON.parse(line.substring(idx + marker.length)); }
           catch { /* ignore */ }
         }
+        const aIdx = line.indexOf(analysisMarker);
+        if (aIdx >= 0) {
+          try { analysisResult = JSON.parse(line.substring(aIdx + analysisMarker.length)); }
+          catch { /* ignore */ }
+        }
       }
-      resolve({ result, logs });
+      resolve({ result, analysisResult, logs });
     });
-    proc.on("error", () => resolve({ result: null, logs }));
+    proc.on("error", () => resolve({ result: null, analysisResult: null, logs }));
   });
 }
 
@@ -120,14 +133,15 @@ function runStep(
 const STEP_LABELS = [
   "Preparing input",
   "Step 1: Strategy Generation",
-  "Step 2: Strategy Mapping & Analysis",
-  "Step 3: Strategy Refinement",
+  "Step 2: Strategy Mapping",
+  "Step 3: Analysis & Refinement Prompt",
+  "Step 3b: LLM Strategy Refinement",
   "Step 4: LLM Realization",
   "Step 5: Post-processing",
 ];
 
 // Steps where we pause for user review/edit
-const PAUSE_STEPS = new Set([1, 2, 3, 4]);
+const PAUSE_STEPS = new Set([1, 2, 3, 4, 5]);
 
 class ChatPanel {
   private panel: vscode.WebviewPanel;
@@ -278,11 +292,13 @@ async function runInteractivePipeline(
 ) {
   const stem = path.basename(inputFile, ".ll");
 
-  for (let step = 0; step <= 5; step++) {
+  for (let step = 0; step <= 6; step++) {
     chat.setStep(step);
     chat.addSystem(`Running ${STEP_LABELS[step]} ...`);
 
-    const { result, logs } = await runStep(inputFile, outputDir, step, outputChannel);
+    const { result, analysisResult, logs } = await runStep(
+      inputFile, outputDir, step, outputChannel
+    );
 
     if (!result || result.status === "fail") {
       chat.showError(
@@ -292,35 +308,29 @@ async function runInteractivePipeline(
       return;
     }
 
-    // For steps that produce reviewable content, show and pause
+    // Steps 1-5: show content and let user review/edit
     if (PAUSE_STEPS.has(step) && result.content) {
       const action = await chat.waitForUser(
         result.title || STEP_LABELS[step],
         result.content,
         result.file || ""
       );
-
-      if (action === "edit") {
-        // Open the file in editor and wait for user to save and come back
+      if (action === "edit" && result.file && fs.existsSync(result.file)) {
         chat.addUser("Opening file for editing ...");
-        if (result.file && fs.existsSync(result.file)) {
-          const doc = await vscode.workspace.openTextDocument(result.file);
-          await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-        }
-        // Wait for user to click continue after editing
-        const msg = "Edit the file in the editor, save it, then click Continue.";
-        const nextAction = await chat.waitForUser(
-          "Waiting for your edits", msg, result.file || ""
+        const doc = await vscode.workspace.openTextDocument(result.file);
+        await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+        await chat.waitForUser(
+          "Edit the file, save, then Continue",
+          "", result.file
         );
-        chat.addUser(nextAction === "continue" ? "Edits done, continuing" : "Continuing");
+        chat.addUser("Edits done, continuing");
       } else {
         chat.addUser("Continue");
       }
-    } else if (step === 5) {
+    } else if (step === 6) {
       // Final result
       if (result.content && result.output_file) {
         chat.showFinal("Final Optimized IR", result.content, result.output_file);
-
         const action = await vscode.window.showInformationMessage(
           `Optimization complete: ${stem}.optimized.ll`,
           "Open Result", "Open Diff"
