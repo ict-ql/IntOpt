@@ -138,6 +138,8 @@ const STEP_LABELS = [
   "Step 3b: LLM Strategy Refinement",
   "Step 4: LLM Realization",
   "Step 5: Post-processing",
+  "Step 6: Verification",
+  "Step 7: Performance Testing",
 ];
 
 // Steps where we pause for user review/edit
@@ -197,6 +199,21 @@ class ChatPanel {
       `</div>`
     );
 
+    return new Promise((resolve) => {
+      this.resolveUserAction = resolve;
+    });
+  }
+
+  /** Show a yes/no choice and wait for user response */
+  waitForChoice(title: string, message: string): Promise<string> {
+    this.addAssistant(
+      `<div class="step-title">${escHtml(title)}</div>` +
+      `<div>${escHtml(message)}</div>` +
+      `<div class="actions">` +
+      `<button onclick="send('yes')">✅ Yes</button>` +
+      `<button onclick="send('no')">⏭ Skip</button>` +
+      `</div>`
+    );
     return new Promise((resolve) => {
       this.resolveUserAction = resolve;
     });
@@ -269,8 +286,9 @@ class ChatPanel {
   <script>
     const vscode = acquireVsCodeApi();
     function send(action) {
-      // Disable all buttons after click
-      document.querySelectorAll('.actions button').forEach(b => b.disabled = true);
+      if (action === 'continue' || action === 'yes' || action === 'no' || action === 'edit') {
+        document.querySelectorAll('.actions button').forEach(b => b.disabled = true);
+      }
       vscode.postMessage({ type: 'userAction', action });
     }
     // Auto-scroll
@@ -292,6 +310,7 @@ async function runInteractivePipeline(
 ) {
   const stem = path.basename(inputFile, ".ll");
 
+  // Steps 0-6: optimization pipeline
   for (let step = 0; step <= 6; step++) {
     chat.setStep(step);
     chat.addSystem(`Running ${STEP_LABELS[step]} ...`);
@@ -328,27 +347,116 @@ async function runInteractivePipeline(
         chat.addUser("Continue");
       }
     } else if (step === 6) {
-      // Final result
+      // Show final result with action buttons in webview
       if (result.content && result.output_file) {
-        chat.showFinal("Final Optimized IR", result.content, result.output_file);
-        const action = await vscode.window.showInformationMessage(
-          `Optimization complete: ${stem}.optimized.ll`,
-          "Open Result", "Open Diff"
+        const contentHtml = result.content.length > 8000
+          ? escHtml(result.content.substring(0, 8000)) + "\n... (truncated)"
+          : escHtml(result.content);
+        chat.addAssistant(
+          `<div class="step-title">✅ Final Optimized IR</div>` +
+          `<pre class="code-block">${contentHtml}</pre>` +
+          `<div class="file-path">📄 ${escHtml(result.output_file)}</div>` +
+          `<div class="actions">` +
+          `<button onclick="send('continue')">▶ Continue</button>` +
+          `<button onclick="send('open')">📄 Open Result</button>` +
+          `<button onclick="send('diff')">🔀 Open Diff</button>` +
+          `</div>`
         );
-        if (action === "Open Result" && result.output_file) {
-          const doc = await vscode.workspace.openTextDocument(result.output_file);
-          await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-        } else if (action === "Open Diff" && result.output_file) {
-          await vscode.commands.executeCommand("vscode.diff",
-            vscode.Uri.file(inputFile), vscode.Uri.file(result.output_file),
-            `${stem}.ll ↔ ${stem}.optimized.ll`
-          );
+        // Loop: open/diff don't advance, only Continue proceeds to verify
+        let finalAction = "";
+        while (finalAction !== "continue") {
+          finalAction = await new Promise<string>((resolve) => {
+            (chat as any).resolveUserAction = resolve;
+          });
+          if (finalAction === "open" && result.output_file) {
+            const doc = await vscode.workspace.openTextDocument(result.output_file);
+            await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+          } else if (finalAction === "diff" && result.output_file) {
+            await vscode.commands.executeCommand("vscode.diff",
+              vscode.Uri.file(inputFile), vscode.Uri.file(result.output_file),
+              `${stem}.ll ↔ ${stem}.optimized.ll`
+            );
+          }
         }
       } else {
         chat.showError("No optimized IR produced");
+        return;
       }
     }
   }
+
+  // Ask user: verify correctness?
+  const verifyChoice = await chat.waitForChoice(
+    "Verify Correctness?",
+    "Run alive2 formal verification on the optimized IR?"
+  );
+
+  if (verifyChoice === "yes") {
+    chat.addUser("Yes, verify");
+    chat.setStep(7);
+    chat.addSystem(`Running ${STEP_LABELS[7]} ...`);
+
+    const { result: vResult, logs: vLogs } = await runStep(
+      inputFile, outputDir, 7, outputChannel
+    );
+
+    if (!vResult || vResult.status === "fail") {
+      chat.showError(
+        `Verification failed.\n` +
+        (vLogs.length > 0 ? vLogs.slice(-5).join("\n") : "No output")
+      );
+      return;
+    }
+
+    // Show verification result
+    const verifyStatus = (vResult as any).verify_status || "UNKNOWN";
+    chat.addAssistant(
+      `<div class="step-title">${escHtml(vResult.title || "Verification")}</div>` +
+      `<pre class="code-block">${escHtml(vResult.content || "")}</pre>`
+    );
+
+    if (verifyStatus === "PASS") {
+      // Ask user: performance test?
+      const perfChoice = await chat.waitForChoice(
+        "Performance Test?",
+        "Verification passed! Run performance benchmarks?"
+      );
+
+      if (perfChoice === "yes") {
+        chat.addUser("Yes, test performance");
+        chat.setStep(8);
+        chat.addSystem(`Running ${STEP_LABELS[8]} ...`);
+
+        const { result: pResult, logs: pLogs } = await runStep(
+          inputFile, outputDir, 8, outputChannel
+        );
+
+        if (!pResult || pResult.status === "fail") {
+          chat.showError(
+            `Performance testing failed.\n` +
+            (pLogs.length > 0 ? pLogs.slice(-5).join("\n") : "No output")
+          );
+          return;
+        }
+
+        chat.addAssistant(
+          `<div class="step-title">📊 ${escHtml(pResult.title || "Performance")}</div>` +
+          `<pre class="code-block">${escHtml(pResult.content || "")}</pre>`
+        );
+      } else {
+        chat.addUser("Skip performance test");
+      }
+    } else {
+      chat.addAssistant(
+        `<div class="error">Verification did not pass (${escHtml(verifyStatus)}). ` +
+        `Performance testing requires verification to pass.</div>`
+      );
+    }
+  } else {
+    chat.addUser("Skip verification");
+  }
+
+  chat.addSystem("Pipeline complete.");
 }
 
 // ── llvm-extract ─────────────────────────────────────────

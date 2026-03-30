@@ -525,6 +525,193 @@ class IROptimizer:
             }))
             return str(output_file) if code else None
 
+        elif step == 7:
+            # Verify: alive2 first, fallback to diff fuzzing if needed
+            log("Step 6: Verification")
+            output_file = output_path / f"{input_path.stem}.optimized.ll"
+            if not output_file.exists():
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 7, "status": "fail",
+                    "title": "Verification",
+                    "content": "No optimized IR found to verify",
+                }))
+                return None
+
+            # Prepare combined IR
+            orig_file = dataset_dir / input_path.name
+            verify_dir = temp / "verify"
+            combined_dir = verify_dir / "combined"
+            combined_dir.mkdir(parents=True, exist_ok=True)
+            from modules.verification import build_combined_ir
+            orig_ir = orig_file.read_text(encoding="utf-8")
+            opt_ir = output_file.read_text(encoding="utf-8")
+            combined = build_combined_ir(orig_ir, opt_ir)
+            stem = input_path.stem
+            case_dir = combined_dir / stem
+            case_dir.mkdir(parents=True, exist_ok=True)
+            (case_dir / "combined.ll").write_text(combined, encoding="utf-8")
+
+            summary_parts = []
+
+            # Phase 1: alive2
+            alive2_dir = verify_dir / "alive2"
+            alive2_bin = getattr(cfg, "alive2_bin",
+                                 "/home/amax/yangz/Env/alive2/build/alive-tv")
+            alive2_timeout = getattr(cfg, "alive2_timeout", 60)
+
+            log("Running alive2 verification ...")
+            alive2_results = self.diff_tester.run_alive2(
+                str(combined_dir), str(alive2_dir),
+                alive2_bin=alive2_bin,
+                timeout=alive2_timeout,
+                workers=1,
+                strict=getattr(cfg, "alive2_strict", False),
+            )
+
+            a2_info = alive2_results.get(stem, {})
+            a2_status = a2_info.get("status", "UNKNOWN")
+            log_file = alive2_dir / stem / "alive2_log.txt"
+            a2_log = ""
+            if log_file.exists():
+                a2_log = log_file.read_text(encoding="utf-8")[-2000:]
+
+            summary_parts.append(f"[Alive2] {a2_status}")
+            if a2_status == "PASS":
+                summary_parts.append("Transformation verified correct by alive2!")
+            else:
+                summary_parts.append(f"Alive2 did not pass ({a2_status}), running diff fuzzing ...")
+
+            final_status = a2_status
+
+            # Phase 2: diff fuzzing fallback if alive2 didn't pass
+            if a2_status != "PASS":
+                log("Alive2 did not pass, falling back to diff fuzzing ...")
+                harness_dir = str(verify_dir / "harness")
+                harness_cfg = getattr(cfg, "harness_dir", "")
+                if harness_cfg and Path(harness_cfg).is_dir() and any(Path(harness_cfg).glob("*.fuzz.cc")):
+                    harness_dir = harness_cfg
+                else:
+                    self.diff_tester.generate_harnesses(
+                        str(combined_dir), harness_dir,
+                        model=getattr(cfg, "llm_model", "gpt-5"),
+                        api_mode=getattr(cfg, "api_mode", "auto"),
+                        workers=1,
+                    )
+
+                bin_dir = str(verify_dir / "bins")
+                self.diff_tester.build_binaries(
+                    str(combined_dir), harness_dir, bin_dir,
+                    workers=getattr(cfg, "build_workers", 16),
+                )
+
+                fuzz_results = self.diff_tester.run_fuzzing(
+                    bin_dir,
+                    fuzz_runs=getattr(cfg, "fuzz_runs", 200000),
+                    fuzz_timeout=getattr(cfg, "fuzz_timeout", 600),
+                    workers=1,
+                )
+
+                fuzz_info = fuzz_results.get(stem, {})
+                fuzz_status = fuzz_info.get("status", "UNKNOWN")
+                fuzz_tail = fuzz_info.get("output_tail", "")[-1000:]
+
+                summary_parts.append(f"\n[Diff Fuzzing] {fuzz_status}")
+                if fuzz_status == "PASS":
+                    summary_parts.append("Diff fuzzing passed!")
+                    final_status = "PASS"
+                else:
+                    summary_parts.append(f"Diff fuzzing: {fuzz_status}")
+                    final_status = fuzz_status
+
+                if fuzz_tail:
+                    summary_parts.append(f"\n--- Fuzzing Log (tail) ---\n{fuzz_tail}")
+
+            if a2_log:
+                summary_parts.append(f"\n--- Alive2 Log ---\n{a2_log}")
+
+            log("STEP_RESULT:" + json.dumps({
+                "step": 7, "status": "ok",
+                "title": f"Verification: {final_status}",
+                "content": "\n".join(summary_parts),
+                "verify_status": final_status,
+            }))
+            return final_status
+
+        elif step == 8:
+            # Performance testing
+            log("Step 7: Performance testing")
+            output_file = output_path / f"{input_path.stem}.optimized.ll"
+            if not output_file.exists():
+                log("STEP_RESULT:" + json.dumps({
+                    "step": 8, "status": "fail",
+                    "title": "Performance Test",
+                    "content": "No optimized IR found",
+                }))
+                return None
+
+            stem = input_path.stem
+            combined_dir = str(temp / "verify" / "combined")
+            perf_dir = temp / "perf_test"
+            perf_dir.mkdir(parents=True, exist_ok=True)
+
+            # Need fuzz binary for corpus collection
+            # Build harness + fuzz binary
+            harness_dir = str(perf_dir / "harness")
+            harness_cfg = getattr(cfg, "harness_dir", "")
+            if harness_cfg and Path(harness_cfg).is_dir() and any(Path(harness_cfg).glob("*.fuzz.cc")):
+                harness_dir = harness_cfg
+            else:
+                self.diff_tester.generate_harnesses(
+                    combined_dir, harness_dir,
+                    model=getattr(cfg, "llm_model", "gpt-5"),
+                    api_mode=getattr(cfg, "api_mode", "auto"),
+                    workers=1,
+                )
+
+            fuzz_bin_dir = str(perf_dir / "fuzz_bins")
+            self.diff_tester.build_binaries(
+                combined_dir, harness_dir, fuzz_bin_dir,
+                workers=getattr(cfg, "build_workers", 16),
+            )
+
+            # Run perf
+            perf_harness_dir = getattr(cfg, "perf_harness_dir", "")
+            corpus_dir = getattr(cfg, "corpus_dir", "")
+            results = self.perf_tester.run_full(
+                combined_dir=combined_dir,
+                harness_dir=harness_dir,
+                fuzz_bin_dir=fuzz_bin_dir,
+                work_dir=str(perf_dir),
+                corpus_dir=corpus_dir,
+                perf_harness_dir=perf_harness_dir,
+                corpus_time=getattr(cfg, "corpus_time", 10),
+                corpus_workers=getattr(cfg, "corpus_workers", 0),
+                build_workers=getattr(cfg, "build_workers", 16),
+                bench_iters=getattr(cfg, "bench_iters", 10000),
+                bench_timeout=getattr(cfg, "bench_timeout", 60),
+                bench_workers=1,
+            )
+
+            info = results.get(stem, {})
+            status = info.get("status", "UNKNOWN")
+            speedup = info.get("speedup", 1.0)
+            n_corpus = info.get("n_corpus", 0)
+            baseline_ns = info.get("baseline_ns", 0)
+            opt_ns = info.get("opt_ns", 0)
+
+            summary = f"Status: {status}\n"
+            summary += f"Speedup: {speedup:.3f}x\n"
+            summary += f"Corpus files: {n_corpus}\n"
+            summary += f"Baseline: {baseline_ns:.2f} ns\n"
+            summary += f"Optimized: {opt_ns:.2f} ns"
+
+            log("STEP_RESULT:" + json.dumps({
+                "step": 8, "status": "ok",
+                "title": f"Performance: {speedup:.3f}x speedup",
+                "content": summary,
+            }))
+            return str(perf_dir)
+
         else:
             raise SystemExit(f"Invalid step: {step}")
 
