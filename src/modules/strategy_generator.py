@@ -140,15 +140,28 @@ class StrategyGenerator:
         log(f"Output dir : {out_dir}")
         log(f"Found {len(ir_files)} IR files in {data_path_obj}")
 
-        # Build dataset
+        # Build dataset, skipping files that already have results
         dataset: List[Dict[str, str]] = []
+        skipped = 0
         for ir_file in ir_files:
+            stem = ir_file.stem
+            pred = out_dir / f"{stem}.model.predict.ll"
+            prompt = out_dir / f"{stem}.prompt.ll"
+            if pred.exists() and prompt.exists():
+                skipped += 1
+                continue
             content = ir_file.read_text(encoding="utf-8")
             dataset.append({
                 "prompt": self._build_prompt(content),
-                "filename": ir_file.stem,
+                "filename": stem,
             })
         total = len(dataset)
+
+        if skipped:
+            log(f"Skipped {skipped} files with existing results")
+        if total == 0:
+            log("All files already processed, nothing to generate")
+            return out_dir
 
         # Load model (once across calls)
         self._load_model(gpus)
