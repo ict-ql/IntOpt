@@ -3,277 +3,32 @@ import * as path from "path";
 import * as fs from "fs";
 import { ChildProcess, spawn } from "child_process";
 
-// ── Helpers ──────────────────────────────────────────────
+// ── Config helpers ───────────────────────────────────────
 
 function cfg<T>(key: string, fallback: T): T {
   return vscode.workspace.getConfiguration("intopt").get<T>(key, fallback);
 }
 
-/** Build a shell command string that activates conda first if configured. */
 function condaWrap(cmd: string): string {
   const condaEnv = cfg("condaEnv", "");
   if (!condaEnv) { return cmd; }
-  // Use conda run to execute in the env without permanently activating
   return `conda run --no-capture-output -n ${condaEnv} ${cmd}`;
 }
 
-/** Spawn a command through bash with conda activation. */
 function spawnWithConda(
-  cmd: string,
-  cwd?: string,
-  extraEnv?: Record<string, string>
+  cmd: string, cwd?: string, extraEnv?: Record<string, string>
 ): ChildProcess {
-  const wrapped = condaWrap(cmd);
-  return spawn("bash", ["--login", "-c", wrapped], {
-    cwd,
-    env: { ...process.env, ...extraEnv },
+  return spawn("bash", ["--login", "-c", condaWrap(cmd)], {
+    cwd, env: { ...process.env, ...extraEnv },
   });
 }
 
-/** Extract function names from selected IR text (lines starting with "define"). */
 function extractFuncNames(text: string): string[] {
   const re = /define\s+.*?@(?:"([^"]+)"|([\w.$-]+))/g;
   const names: string[] = [];
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    names.push(m[1] || m[2]);
-  }
+  while ((m = re.exec(text)) !== null) { names.push(m[1] || m[2]); }
   return names;
-}
-
-// ── Result panel ─────────────────────────────────────────
-
-class ResultPanel {
-  private panel: vscode.WebviewPanel;
-  private logs: string[] = [];
-  private steps: { name: string; status: string; detail: string }[] = [
-    { name: "Step 1: Strategy Generation", status: "pending", detail: "" },
-    { name: "Step 2: Strategy Mapping", status: "pending", detail: "" },
-    { name: "Step 3: Strategy Refinement", status: "pending", detail: "" },
-    { name: "Step 4: LLM Realization", status: "pending", detail: "" },
-    { name: "Step 5: Post-processing", status: "pending", detail: "" },
-  ];
-
-  constructor() {
-    this.panel = vscode.window.createWebviewPanel(
-      "intoptResult",
-      "IntOpt: Optimization Progress",
-      vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true }
-    );
-    this.render();
-  }
-
-  appendLog(line: string) {
-    this.logs.push(line);
-    // Detect step transitions
-    for (let i = 0; i < this.steps.length; i++) {
-      const stepNum = `Step ${i + 1}`;
-      if (line.includes(stepNum)) {
-        // Mark previous steps as done
-        for (let j = 0; j < i; j++) {
-          if (this.steps[j].status !== "done") {
-            this.steps[j].status = "done";
-          }
-        }
-        this.steps[i].status = "running";
-      }
-    }
-    this.render();
-  }
-
-  setStepDetail(stepIdx: number, detail: string) {
-    if (stepIdx >= 0 && stepIdx < this.steps.length) {
-      this.steps[stepIdx].detail = detail;
-      this.render();
-    }
-  }
-
-  finish(success: boolean, outputFile?: string) {
-    for (const s of this.steps) {
-      if (s.status === "running") { s.status = "done"; }
-    }
-    if (success && outputFile) {
-      this.appendLog(`\n✓ Optimization complete: ${outputFile}`);
-    } else {
-      this.appendLog("\n✗ Optimization failed.");
-    }
-    this.render();
-  }
-
-  private render() {
-    const stepsHtml = this.steps
-      .map((s) => {
-        const icon =
-          s.status === "done" ? "✅" :
-          s.status === "running" ? "⏳" : "⬜";
-        const detail = s.detail
-          ? `<pre class="detail">${escHtml(s.detail)}</pre>` : "";
-        return `<div class="step ${s.status}">${icon} ${escHtml(s.name)}${detail}</div>`;
-      })
-      .join("\n");
-
-    const logsHtml = this.logs.map((l) => escHtml(l)).join("\n");
-
-    this.panel.webview.html = `<!DOCTYPE html>
-<html><head><style>
-  body { font-family: var(--vscode-font-family); padding: 12px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
-  .step { padding: 6px 0; font-size: 14px; }
-  .step.running { font-weight: bold; }
-  .detail { margin: 4px 0 4px 28px; font-size: 12px; opacity: 0.8; max-height: 200px; overflow: auto; }
-  .log-box { margin-top: 16px; padding: 8px; background: var(--vscode-terminal-background); border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 400px; overflow: auto; }
-  h3 { margin: 0 0 8px 0; }
-</style></head><body>
-  <h3>IntOpt Optimization Pipeline</h3>
-  ${stepsHtml}
-  <div class="log-box">${logsHtml}</div>
-  <script>
-    const box = document.querySelector('.log-box');
-    if (box) box.scrollTop = box.scrollHeight;
-  </script>
-</body></html>`;
-  }
-
-  dispose() { this.panel.dispose(); }
-}
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-// ── Core optimization logic ──────────────────────────────
-
-async function runOptimization(
-  inputFile: string,
-  outputDir: string,
-  panel: ResultPanel,
-  outputChannel: vscode.OutputChannel
-): Promise<string | undefined> {
-  const pythonPath = cfg("pythonPath", "python");
-  const projectRoot = cfg("projectRoot", "/home/amax/yangz/intop");
-  const configFile = cfg("configFile", path.join(projectRoot, "config", "config.yaml"));
-
-  const args = [
-    path.join(projectRoot, "src", "main.py"),
-    "--mode", "single",
-    "--input", inputFile,
-    "--output", outputDir,
-    "--config", configFile,
-  ];
-
-  const cmdStr = `${pythonPath} ${args.join(" ")}`;
-  panel.appendLog(`$ ${cmdStr}`);
-  outputChannel.appendLine(`[IntOpt] Running: ${cmdStr}`);
-
-  return new Promise<string | undefined>((resolve) => {
-    const proc = spawnWithConda(
-      cmdStr,
-      path.join(projectRoot, "src"),
-      { PYTHONUNBUFFERED: "1" }
-    );
-
-    let lastOutput = "";
-
-    const handleData = (data: Buffer) => {
-      const text = data.toString();
-      lastOutput += text;
-      for (const line of text.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) { continue; }
-        panel.appendLog(trimmed);
-        outputChannel.appendLine(trimmed);
-      }
-    };
-
-    proc.stdout?.on("data", handleData);
-    proc.stderr?.on("data", handleData);
-
-    proc.on("close", (code: number | null) => {
-      if (code === 0) {
-        // Find the .optimized.ll file
-        const stem = path.basename(inputFile, ".ll");
-        const optimized = path.join(outputDir, `${stem}.optimized.ll`);
-        if (fs.existsSync(optimized)) {
-          panel.finish(true, optimized);
-          resolve(optimized);
-        } else {
-          panel.finish(false);
-          resolve(undefined);
-        }
-      } else {
-        panel.finish(false);
-        resolve(undefined);
-      }
-    });
-
-    proc.on("error", (err: Error) => {
-      panel.appendLog(`Process error: ${err.message}`);
-      panel.finish(false);
-      resolve(undefined);
-    });
-  });
-}
-
-
-// ── llvm-extract ─────────────────────────────────────────
-
-async function extractFunctions(
-  sourceFile: string,
-  funcNames: string[],
-  outputFile: string,
-  outputChannel: vscode.OutputChannel
-): Promise<boolean> {
-  const llvmExtract = cfg("llvmExtract",
-    "/home/amax/yangz/Env/llvm-project/build/bin/llvm-extract");
-
-  // First assemble the .ll to .bc, then extract, then disassemble back
-  const projectRoot = cfg("projectRoot", "/home/amax/yangz/intop");
-  const llvmAs = llvmExtract.replace("llvm-extract", "llvm-as");
-  const llvmDis = llvmExtract.replace("llvm-extract", "llvm-dis");
-
-  const bcFile = outputFile.replace(/\.ll$/, ".bc");
-  const extractedBc = outputFile.replace(/\.ll$/, ".extracted.bc");
-
-  // Step 1: llvm-as source.ll -o source.bc
-  outputChannel.appendLine(`[IntOpt] llvm-as ${sourceFile} -o ${bcFile}`);
-  const asOk = await runCmd(llvmAs, [sourceFile, "-o", bcFile]);
-  if (!asOk) {
-    // If llvm-as fails, the file might already be bitcode or has errors.
-    // Try using the .ll directly with llvm-extract (it can handle .ll too)
-    outputChannel.appendLine("[IntOpt] llvm-as failed, trying llvm-extract on .ll directly");
-
-    const funcArgs: string[] = [];
-    for (const fn of funcNames) {
-      funcArgs.push("--func", fn);
-    }
-    const extractOk = await runCmd(llvmExtract, [
-      ...funcArgs, sourceFile, "-o", extractedBc,
-    ]);
-    if (!extractOk) {
-      outputChannel.appendLine("[IntOpt] llvm-extract failed");
-      return false;
-    }
-    const disOk = await runCmd(llvmDis, [extractedBc, "-o", outputFile]);
-    return disOk;
-  }
-
-  // Step 2: llvm-extract --func=name1 --func=name2 source.bc -o extracted.bc
-  const funcArgs: string[] = [];
-  for (const fn of funcNames) {
-    funcArgs.push("--func", fn);
-  }
-  outputChannel.appendLine(`[IntOpt] llvm-extract ${funcArgs.join(" ")} ${bcFile}`);
-  const extractOk = await runCmd(llvmExtract, [
-    ...funcArgs, bcFile, "-o", extractedBc,
-  ]);
-  if (!extractOk) {
-    outputChannel.appendLine("[IntOpt] llvm-extract failed");
-    return false;
-  }
-
-  // Step 3: llvm-dis extracted.bc -o output.ll
-  const disOk = await runCmd(llvmDis, [extractedBc, "-o", outputFile]);
-  return disOk;
 }
 
 function runCmd(cmd: string, args: string[]): Promise<boolean> {
@@ -285,145 +40,398 @@ function runCmd(cmd: string, args: string[]): Promise<boolean> {
   });
 }
 
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ── Step runner ──────────────────────────────────────────
+
+interface StepResult {
+  step: number;
+  status: string;
+  title?: string;
+  content?: string;
+  file?: string;
+  dir?: string;
+  output_file?: string;
+  message?: string;
+}
+
+
+function runStep(
+  inputFile: string, outputDir: string, step: number,
+  outputChannel: vscode.OutputChannel
+): Promise<{ result: StepResult | null; logs: string[] }> {
+  const pythonPath = cfg("pythonPath", "python");
+  const projectRoot = cfg("projectRoot", "/home/amax/yangz/intop");
+  const configFile = cfg("configFile", path.join(projectRoot, "config", "config.yaml"));
+
+  const args = [
+    pythonPath,
+    path.join(projectRoot, "src", "main.py"),
+    "--mode", "step",
+    "--step", String(step),
+    "--input", inputFile,
+    "--output", outputDir,
+    "--config", configFile,
+  ];
+  const cmdStr = args.join(" ");
+
+  return new Promise((resolve) => {
+    const proc = spawnWithConda(cmdStr, path.join(projectRoot, "src"),
+      { PYTHONUNBUFFERED: "1" });
+    let allOutput = "";
+    const logs: string[] = [];
+
+    const handle = (data: Buffer) => {
+      const text = data.toString();
+      allOutput += text;
+      for (const line of text.split("\n")) {
+        const t = line.trim();
+        if (t) {
+          logs.push(t);
+          outputChannel.appendLine(t);
+        }
+      }
+    };
+    proc.stdout?.on("data", handle);
+    proc.stderr?.on("data", handle);
+
+    proc.on("close", () => {
+      // Parse STEP_RESULT from output
+      const marker = "STEP_RESULT:";
+      let result: StepResult | null = null;
+      for (const line of allOutput.split("\n")) {
+        const idx = line.indexOf(marker);
+        if (idx >= 0) {
+          try { result = JSON.parse(line.substring(idx + marker.length)); }
+          catch { /* ignore */ }
+        }
+      }
+      resolve({ result, logs });
+    });
+    proc.on("error", () => resolve({ result: null, logs }));
+  });
+}
+
+
+// ── Chat-like Webview Panel ──────────────────────────────
+
+const STEP_LABELS = [
+  "Preparing input",
+  "Step 1: Strategy Generation",
+  "Step 2: Strategy Mapping & Analysis",
+  "Step 3: Strategy Refinement",
+  "Step 4: LLM Realization",
+  "Step 5: Post-processing",
+];
+
+// Steps where we pause for user review/edit
+const PAUSE_STEPS = new Set([1, 2, 3, 4]);
+
+class ChatPanel {
+  private panel: vscode.WebviewPanel;
+  private messages: { role: string; html: string }[] = [];
+  private resolveUserAction: ((action: string) => void) | null = null;
+  private currentStep = -1;
+
+  constructor() {
+    this.panel = vscode.window.createWebviewPanel(
+      "intoptChat", "IntOpt", vscode.ViewColumn.Beside,
+      { enableScripts: true, retainContextWhenHidden: true },
+    );
+    this.panel.webview.onDidReceiveMessage((msg) => {
+      if (msg.type === "userAction" && this.resolveUserAction) {
+        this.resolveUserAction(msg.action);
+        this.resolveUserAction = null;
+      }
+    });
+  }
+
+  addSystem(html: string) {
+    this.messages.push({ role: "system", html });
+    this.render();
+  }
+
+  addAssistant(html: string) {
+    this.messages.push({ role: "assistant", html });
+    this.render();
+  }
+
+  addUser(html: string) {
+    this.messages.push({ role: "user", html });
+    this.render();
+  }
+
+  setStep(step: number) {
+    this.currentStep = step;
+  }
+
+  /** Show content and wait for user to click Continue or Edit */
+  waitForUser(title: string, content: string, filePath: string): Promise<string> {
+    const contentHtml = content.length > 5000
+      ? escHtml(content.substring(0, 5000)) + "\n... (truncated, see full file)"
+      : escHtml(content);
+
+    this.addAssistant(
+      `<div class="step-title">${escHtml(title)}</div>` +
+      `<pre class="code-block">${contentHtml}</pre>` +
+      `<div class="file-path">📄 ${escHtml(filePath)}</div>` +
+      `<div class="actions" id="actions-${this.messages.length}">` +
+      `<button onclick="send('continue')">▶ Continue</button>` +
+      `<button onclick="send('edit')">✏️ Edit in Editor</button>` +
+      `</div>`
+    );
+
+    return new Promise((resolve) => {
+      this.resolveUserAction = resolve;
+    });
+  }
+
+  showFinal(title: string, content: string, filePath: string) {
+    const contentHtml = content.length > 8000
+      ? escHtml(content.substring(0, 8000)) + "\n... (truncated)"
+      : escHtml(content);
+    this.addAssistant(
+      `<div class="step-title">✅ ${escHtml(title)}</div>` +
+      `<pre class="code-block">${contentHtml}</pre>` +
+      `<div class="file-path">📄 ${escHtml(filePath)}</div>`
+    );
+  }
+
+  showError(msg: string) {
+    this.addAssistant(`<div class="error">❌ ${escHtml(msg)}</div>`);
+  }
+
+  private render() {
+    const msgsHtml = this.messages.map((m) => {
+      const cls = m.role === "user" ? "msg-user" :
+                  m.role === "system" ? "msg-system" : "msg-assistant";
+      return `<div class="msg ${cls}">${m.html}</div>`;
+    }).join("\n");
+
+    // Step progress bar
+    const stepsHtml = STEP_LABELS.map((label, i) => {
+      const cls = i < this.currentStep ? "done" :
+                  i === this.currentStep ? "active" : "pending";
+      const icon = i < this.currentStep ? "✅" :
+                   i === this.currentStep ? "⏳" : "⬜";
+      return `<span class="step-badge ${cls}">${icon} ${escHtml(label)}</span>`;
+    }).join("");
+
+    this.panel.webview.html = `<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; }
+  body { font-family: var(--vscode-font-family); margin: 0; padding: 0;
+         color: var(--vscode-foreground); background: var(--vscode-editor-background);
+         display: flex; flex-direction: column; height: 100vh; }
+  .progress { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px;
+              border-bottom: 1px solid var(--vscode-panel-border); font-size: 12px; }
+  .step-badge { padding: 2px 6px; border-radius: 3px; opacity: 0.5; }
+  .step-badge.done { opacity: 0.7; }
+  .step-badge.active { opacity: 1; font-weight: bold;
+    background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .chat { flex: 1; overflow-y: auto; padding: 12px; }
+  .msg { margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; max-width: 95%; }
+  .msg-system { background: var(--vscode-textBlockQuote-background); font-size: 12px; opacity: 0.7; }
+  .msg-assistant { background: var(--vscode-editor-inactiveSelectionBackground); }
+  .msg-user { background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+              margin-left: auto; max-width: 60%; text-align: right; }
+  .step-title { font-weight: bold; margin-bottom: 8px; font-size: 14px; }
+  .code-block { background: var(--vscode-terminal-background); padding: 10px;
+                border-radius: 4px; font-family: monospace; font-size: 12px;
+                white-space: pre-wrap; word-break: break-all;
+                max-height: 400px; overflow: auto; margin: 8px 0; }
+  .file-path { font-size: 11px; opacity: 0.6; margin-bottom: 8px; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .actions button { padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer;
+    background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+    font-size: 13px; }
+  .actions button:hover { background: var(--vscode-button-hoverBackground); }
+  .error { color: var(--vscode-errorForeground); font-weight: bold; }
+</style></head><body>
+  <div class="progress">${stepsHtml}</div>
+  <div class="chat" id="chat">${msgsHtml}</div>
+  <script>
+    const vscode = acquireVsCodeApi();
+    function send(action) {
+      // Disable all buttons after click
+      document.querySelectorAll('.actions button').forEach(b => b.disabled = true);
+      vscode.postMessage({ type: 'userAction', action });
+    }
+    // Auto-scroll
+    const chat = document.getElementById('chat');
+    if (chat) chat.scrollTop = chat.scrollHeight;
+  </script>
+</body></html>`;
+  }
+
+  dispose() { this.panel.dispose(); }
+}
+
+
+// ── Interactive pipeline orchestrator ────────────────────
+
+async function runInteractivePipeline(
+  inputFile: string, outputDir: string,
+  chat: ChatPanel, outputChannel: vscode.OutputChannel
+) {
+  const stem = path.basename(inputFile, ".ll");
+
+  for (let step = 0; step <= 5; step++) {
+    chat.setStep(step);
+    chat.addSystem(`Running ${STEP_LABELS[step]} ...`);
+
+    const { result, logs } = await runStep(inputFile, outputDir, step, outputChannel);
+
+    if (!result || result.status === "fail") {
+      chat.showError(
+        `${STEP_LABELS[step]} failed.\n` +
+        (logs.length > 0 ? logs.slice(-5).join("\n") : "No output")
+      );
+      return;
+    }
+
+    // For steps that produce reviewable content, show and pause
+    if (PAUSE_STEPS.has(step) && result.content) {
+      const action = await chat.waitForUser(
+        result.title || STEP_LABELS[step],
+        result.content,
+        result.file || ""
+      );
+
+      if (action === "edit") {
+        // Open the file in editor and wait for user to save and come back
+        chat.addUser("Opening file for editing ...");
+        if (result.file && fs.existsSync(result.file)) {
+          const doc = await vscode.workspace.openTextDocument(result.file);
+          await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+        }
+        // Wait for user to click continue after editing
+        const msg = "Edit the file in the editor, save it, then click Continue.";
+        const nextAction = await chat.waitForUser(
+          "Waiting for your edits", msg, result.file || ""
+        );
+        chat.addUser(nextAction === "continue" ? "Edits done, continuing" : "Continuing");
+      } else {
+        chat.addUser("Continue");
+      }
+    } else if (step === 5) {
+      // Final result
+      if (result.content && result.output_file) {
+        chat.showFinal("Final Optimized IR", result.content, result.output_file);
+
+        const action = await vscode.window.showInformationMessage(
+          `Optimization complete: ${stem}.optimized.ll`,
+          "Open Result", "Open Diff"
+        );
+        if (action === "Open Result" && result.output_file) {
+          const doc = await vscode.workspace.openTextDocument(result.output_file);
+          await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+        } else if (action === "Open Diff" && result.output_file) {
+          await vscode.commands.executeCommand("vscode.diff",
+            vscode.Uri.file(inputFile), vscode.Uri.file(result.output_file),
+            `${stem}.ll ↔ ${stem}.optimized.ll`
+          );
+        }
+      } else {
+        chat.showError("No optimized IR produced");
+      }
+    }
+  }
+}
+
+// ── llvm-extract ─────────────────────────────────────────
+
+async function extractFunctions(
+  sourceFile: string, funcNames: string[], outputFile: string,
+  outputChannel: vscode.OutputChannel
+): Promise<boolean> {
+  const llvmExtract = cfg("llvmExtract",
+    "/home/amax/yangz/Env/llvm-project/build/bin/llvm-extract");
+  const llvmAs = llvmExtract.replace("llvm-extract", "llvm-as");
+  const llvmDis = llvmExtract.replace("llvm-extract", "llvm-dis");
+
+  const bcFile = outputFile.replace(/\.ll$/, ".bc");
+  const extractedBc = outputFile.replace(/\.ll$/, ".extracted.bc");
+
+  outputChannel.appendLine(`[IntOpt] llvm-as ${sourceFile} -o ${bcFile}`);
+  const asOk = await runCmd(llvmAs, [sourceFile, "-o", bcFile]);
+
+  const funcArgs: string[] = [];
+  for (const fn of funcNames) { funcArgs.push("--func", fn); }
+
+  if (!asOk) {
+    outputChannel.appendLine("[IntOpt] llvm-as failed, trying llvm-extract on .ll directly");
+    const ok = await runCmd(llvmExtract, [...funcArgs, sourceFile, "-o", extractedBc]);
+    if (!ok) { return false; }
+    return await runCmd(llvmDis, [extractedBc, "-o", outputFile]);
+  }
+
+  const ok = await runCmd(llvmExtract, [...funcArgs, bcFile, "-o", extractedBc]);
+  if (!ok) { return false; }
+  return await runCmd(llvmDis, [extractedBc, "-o", outputFile]);
+}
+
 // ── Commands ─────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("IntOpt");
 
-  // Command: optimize selected region
   context.subscriptions.push(
     vscode.commands.registerCommand("intopt.optimizeSelection", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        vscode.window.showErrorMessage("No active editor");
-        return;
-      }
+      if (!editor) { return vscode.window.showErrorMessage("No active editor"); }
 
       const selection = editor.selection;
       if (selection.isEmpty) {
-        vscode.window.showErrorMessage(
-          "Please select the IR region you want to optimize"
-        );
-        return;
+        return vscode.window.showErrorMessage("Please select the IR region to optimize");
       }
 
       const selectedText = editor.document.getText(selection);
       const funcNames = extractFuncNames(selectedText);
-
       if (funcNames.length === 0) {
-        vscode.window.showErrorMessage(
-          "No function definitions found in selection. " +
-          "Please select a region containing 'define' blocks."
-        );
-        return;
+        return vscode.window.showErrorMessage("No 'define' blocks found in selection");
       }
 
       const sourceFile = editor.document.uri.fsPath;
-      const sourceDir = path.dirname(sourceFile);
       const stem = path.basename(sourceFile, ".ll");
-
-      // Determine output directory
       let outputDir = cfg("outputDir", "");
-      if (!outputDir) {
-        outputDir = path.join(sourceDir, `${stem}_intopt`);
-      }
+      if (!outputDir) { outputDir = path.join(path.dirname(sourceFile), `${stem}_intopt`); }
       fs.mkdirSync(outputDir, { recursive: true });
 
-      const panel = new ResultPanel();
-      panel.appendLog(`Source: ${sourceFile}`);
-      panel.appendLog(`Functions: ${funcNames.join(", ")}`);
-      panel.appendLog(`Output: ${outputDir}`);
-      panel.appendLog("");
+      const chat = new ChatPanel();
+      chat.addSystem(`Source: ${sourceFile}`);
+      chat.addSystem(`Functions: ${funcNames.join(", ")}`);
 
-      // Extract functions using llvm-extract
-      panel.appendLog("Extracting selected functions with llvm-extract ...");
+      // Extract
+      chat.addSystem("Extracting selected functions with llvm-extract ...");
       const extractedFile = path.join(outputDir, `${stem}.ll`);
-
-      const ok = await extractFunctions(
-        sourceFile, funcNames, extractedFile, outputChannel
-      );
-
+      const ok = await extractFunctions(sourceFile, funcNames, extractedFile, outputChannel);
       if (!ok) {
-        // Fallback: write the selected text directly as a .ll file
-        panel.appendLog(
-          "llvm-extract failed, using raw selection as input"
-        );
+        chat.addSystem("llvm-extract failed, using raw selection as input");
         fs.writeFileSync(extractedFile, selectedText, "utf-8");
       }
 
-      panel.appendLog(`Extracted IR: ${extractedFile}`);
-      panel.appendLog("");
-
-      // Run optimization pipeline
-      const result = await runOptimization(
-        extractedFile, outputDir, panel, outputChannel
-      );
-
-      if (result) {
-        const action = await vscode.window.showInformationMessage(
-          `Optimization complete: ${path.basename(result)}`,
-          "Open Result", "Open Diff"
-        );
-        if (action === "Open Result") {
-          const doc = await vscode.workspace.openTextDocument(result);
-          await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
-        } else if (action === "Open Diff") {
-          const leftUri = vscode.Uri.file(extractedFile);
-          const rightUri = vscode.Uri.file(result);
-          await vscode.commands.executeCommand(
-            "vscode.diff", leftUri, rightUri,
-            `${stem}.ll ↔ ${stem}.optimized.ll`
-          );
-        }
-      }
+      await runInteractivePipeline(extractedFile, outputDir, chat, outputChannel);
     })
   );
 
-  // Command: optimize entire file
   context.subscriptions.push(
     vscode.commands.registerCommand("intopt.optimizeFile", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        vscode.window.showErrorMessage("No active editor");
-        return;
-      }
+      if (!editor) { return vscode.window.showErrorMessage("No active editor"); }
 
       const sourceFile = editor.document.uri.fsPath;
-      const sourceDir = path.dirname(sourceFile);
       const stem = path.basename(sourceFile, ".ll");
-
       let outputDir = cfg("outputDir", "");
-      if (!outputDir) {
-        outputDir = path.join(sourceDir, `${stem}_intopt`);
-      }
+      if (!outputDir) { outputDir = path.join(path.dirname(sourceFile), `${stem}_intopt`); }
       fs.mkdirSync(outputDir, { recursive: true });
 
-      const panel = new ResultPanel();
-      panel.appendLog(`Source: ${sourceFile}`);
-      panel.appendLog(`Output: ${outputDir}`);
-      panel.appendLog("");
+      const chat = new ChatPanel();
+      chat.addSystem(`Source: ${sourceFile}`);
 
-      const result = await runOptimization(
-        sourceFile, outputDir, panel, outputChannel
-      );
-
-      if (result) {
-        const action = await vscode.window.showInformationMessage(
-          `Optimization complete: ${path.basename(result)}`,
-          "Open Result", "Open Diff"
-        );
-        if (action === "Open Result") {
-          const doc = await vscode.workspace.openTextDocument(result);
-          await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
-        } else if (action === "Open Diff") {
-          const leftUri = vscode.Uri.file(sourceFile);
-          const rightUri = vscode.Uri.file(result);
-          await vscode.commands.executeCommand(
-            "vscode.diff", leftUri, rightUri,
-            `${stem}.ll ↔ ${stem}.optimized.ll`
-          );
-        }
-      }
+      await runInteractivePipeline(sourceFile, outputDir, chat, outputChannel);
     })
   );
 

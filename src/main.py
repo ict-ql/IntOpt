@@ -311,7 +311,7 @@ class IROptimizer:
     # Entry
     # ------------------------------------------------------------------
 
-    def run(self, input_path: str, output_dir: str, mode: str):
+    def run(self, input_path: str, output_dir: str, mode: str, step: int = 0):
         if mode == "single":
             return self.optimize_single_file(input_path, output_dir)
         elif mode == "batch":
@@ -322,8 +322,181 @@ class IROptimizer:
             return self.perf_test(input_path, output_dir)
         elif mode == "verify":
             return self.verify(input_path, output_dir)
+        elif mode == "step":
+            return self.run_step(input_path, output_dir, step)
         else:
             raise SystemExit(f"Invalid mode: {mode}")
+
+    # ------------------------------------------------------------------
+    # Step-by-step interactive mode (for VSCode extension)
+    # ------------------------------------------------------------------
+
+    def run_step(self, input_file: str, output_dir: str, step: int):
+        """Run a single pipeline step.  The extension calls this repeatedly.
+
+        Step 0: prepare (copy input to dataset dir)
+        Step 1: strategy generation
+        Step 2: strategy mapping
+        Step 3: strategy refinement (analysis + LLM refinement)
+        Step 4: LLM realization
+        Step 5: post-processing + extract final IR
+        """
+        import json
+
+        input_path = Path(input_file)
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        temp = output_path / "temp"
+        cfg = self.config
+
+        dataset_dir = temp / "dataset"
+
+        if step == 0:
+            # Prepare dataset directory
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(input_file, dataset_dir / input_path.name)
+            log("STEP_RESULT:" + json.dumps({
+                "step": 0, "status": "ok",
+                "message": f"Prepared input: {input_path.name}",
+                "dataset_dir": str(dataset_dir),
+            }))
+            return str(dataset_dir)
+
+        elif step == 1:
+            # Strategy generation
+            log("Step 1: Strategy generation")
+            initial_dir = self.strategy_gen.generate(
+                data_path=str(dataset_dir),
+                out_dir=str(temp / "step1_initial"),
+                batch_size=1,
+                gpus=cfg.gpus,
+            )
+            # Read the generated strategy
+            pred_files = list(Path(initial_dir).glob("*.model.predict.ll"))
+            content = ""
+            if pred_files:
+                content = pred_files[0].read_text(encoding="utf-8")
+            log("STEP_RESULT:" + json.dumps({
+                "step": 1, "status": "ok",
+                "title": "Initial Optimization Strategy",
+                "content": content,
+                "file": str(pred_files[0]) if pred_files else "",
+                "dir": str(initial_dir),
+            }))
+            return str(initial_dir)
+
+        elif step == 2:
+            # Strategy mapping
+            initial_dir = str(temp / "step1_initial")
+            log("Step 2: Strategy mapping")
+            mapping_dir = self.strategy_map.map_strategies(
+                in_dir=initial_dir,
+                out_dir=str(temp / "step2_mapping"),
+                topk=3,
+                emit="tokens",
+            )
+            # Read the mapping/analysis result (the prompt file has analysis)
+            prompt_files = list(Path(mapping_dir).glob("*.prompt.ll"))
+            content = ""
+            if prompt_files:
+                content = prompt_files[0].read_text(encoding="utf-8")
+            log("STEP_RESULT:" + json.dumps({
+                "step": 2, "status": "ok",
+                "title": "Strategy Mapping & Analysis",
+                "content": content,
+                "file": str(prompt_files[0]) if prompt_files else "",
+                "dir": str(mapping_dir),
+            }))
+            return str(mapping_dir)
+
+        elif step == 3:
+            # Strategy refinement + LLM refinement
+            mapping_dir = str(temp / "step2_mapping")
+            initial_dir = str(temp / "step1_initial")
+            log("Step 3: Strategy refinement")
+            refine_dir = self.strategy_refine.refine(
+                in_dir=mapping_dir,
+                ll_dir=str(dataset_dir),
+                initial_dir=initial_dir,
+                out_dir=str(temp / "step3_refinement"),
+                timeout=cfg.timeout,
+                verify_timeout=cfg.verify_timeout,
+            )
+            # LLM-based refinement
+            refine_dir = self.llm.batch_query(
+                in_dir=refine_dir,
+                out_dir=refine_dir,
+                model=cfg.llm_model,
+                api_mode=cfg.api_mode,
+                workers=1,
+            )
+            # Read refined strategy
+            pred_files = list(Path(refine_dir).glob("*.model.predict.ll"))
+            content = ""
+            if pred_files:
+                content = pred_files[0].read_text(encoding="utf-8")
+            log("STEP_RESULT:" + json.dumps({
+                "step": 3, "status": "ok",
+                "title": "Refined Optimization Strategy",
+                "content": content,
+                "file": str(pred_files[0]) if pred_files else "",
+                "dir": str(refine_dir),
+            }))
+            return str(refine_dir)
+
+        elif step == 4:
+            # LLM realization
+            refine_dir = str(temp / "step3_refinement")
+            log("Step 4: LLM realization")
+            realize_dir = str(temp / "step4_realization")
+            realize_dir = self._rewrite_prompts(refine_dir, realize_dir)
+            realize_dir = self.llm.batch_query(
+                in_dir=realize_dir,
+                out_dir=realize_dir,
+                model=cfg.llm_model,
+                api_mode=cfg.api_mode,
+                workers=1,
+            )
+            # Read generated IR
+            pred_files = list(Path(realize_dir).glob("*.model.predict.ll"))
+            content = ""
+            if pred_files:
+                content = pred_files[0].read_text(encoding="utf-8")
+            log("STEP_RESULT:" + json.dumps({
+                "step": 4, "status": "ok",
+                "title": "LLM-Generated Optimized IR",
+                "content": content,
+                "file": str(pred_files[0]) if pred_files else "",
+                "dir": str(realize_dir),
+            }))
+            return str(realize_dir)
+
+        elif step == 5:
+            # Post-processing + extract
+            realize_dir = str(temp / "step4_realization")
+            log("Step 5: Post-processing")
+            realize_dir = self.post_proc.run(in_dir=realize_dir)
+
+            output_file = output_path / f"{input_path.stem}.optimized.ll"
+            pred_files = list(Path(realize_dir).glob("*.model.predict.ll"))
+            code = ""
+            if pred_files:
+                code = extract_single_block(
+                    pred_files[0].read_text(encoding="utf-8"), "code",
+                ) or ""
+                if code:
+                    output_file.write_text(code, encoding="utf-8")
+
+            log("STEP_RESULT:" + json.dumps({
+                "step": 5, "status": "ok" if code else "fail",
+                "title": "Final Optimized IR",
+                "content": code,
+                "output_file": str(output_file) if code else "",
+            }))
+            return str(output_file) if code else None
+
+        else:
+            raise SystemExit(f"Invalid step: {step}")
 
     # ------------------------------------------------------------------
     # Diff testing mode
@@ -817,7 +990,9 @@ class IROptimizer:
 
 def parse_args():
     p = argparse.ArgumentParser(description="LLVM IR Optimizer")
-    p.add_argument("--mode", choices=["single", "batch", "diff_test", "perf_test", "verify"], required=True)
+    p.add_argument("--mode", choices=["single", "batch", "diff_test", "perf_test", "verify", "step"], required=True)
+    p.add_argument("--step", type=int, default=0,
+                   help="Step number for interactive mode (0-5)")
     p.add_argument("--input", required=True,
                    help="Input .ll file (single), directory (batch), "
                         "or original_dir:optimized_dir (diff_test)")
@@ -841,11 +1016,11 @@ def main():
     args = parse_args()
     overrides = {
         k: v for k, v in vars(args).items()
-        if v is not None and k not in ("mode", "input", "output", "config")
+        if v is not None and k not in ("mode", "input", "output", "config", "step")
     }
     config = Config(config_file=args.config, **overrides)
     optimizer = IROptimizer(config)
-    result = optimizer.run(args.input, args.output, args.mode)
+    result = optimizer.run(args.input, args.output, args.mode, step=args.step)
     if result:
         log(f"All done.  Result: {result}")
 
