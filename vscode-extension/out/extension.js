@@ -75,6 +75,9 @@ function runCmd(cmd, args) {
 function escHtml(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+function escAttr(s) {
+    return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 function runStep(inputFile, outputDir, step, outputChannel) {
     const pythonPath = cfg("pythonPath", "python");
     const projectRoot = cfg("projectRoot", "/home/amax/yangz/intop");
@@ -176,13 +179,24 @@ class ChatPanel {
         this.currentStep = step;
     }
     /** Show content and wait for user to click Continue or Edit */
-    waitForUser(title, content, filePath) {
-        const contentHtml = content.length > 5000
-            ? escHtml(content.substring(0, 5000)) + "\n... (truncated, see full file)"
-            : escHtml(content);
+    waitForUser(title, content, filePath, contentType) {
+        let contentHtml;
+        if (contentType === "markdown") {
+            // Will be rendered by marked.js in the webview
+            const truncated = content.length > 8000 ? content.substring(0, 8000) + "\n\n... (truncated)" : content;
+            contentHtml = `<div class="markdown-body" data-md="${escAttr(truncated)}"></div>`;
+        }
+        else if (contentType === "ir") {
+            const truncated = content.length > 8000 ? content.substring(0, 8000) + "\n... (truncated)" : content;
+            contentHtml = `<pre><code class="language-llvm">${escHtml(truncated)}</code></pre>`;
+        }
+        else {
+            const truncated = content.length > 5000 ? content.substring(0, 5000) + "\n... (truncated)" : content;
+            contentHtml = `<pre class="code-block">${escHtml(truncated)}</pre>`;
+        }
         this.addAssistant(`<div class="step-title">${escHtml(title)}</div>` +
-            `<pre class="code-block">${contentHtml}</pre>` +
-            `<div class="file-path">📄 ${escHtml(filePath)}</div>` +
+            contentHtml +
+            (filePath ? `<div class="file-path">📄 ${escHtml(filePath)}</div>` : "") +
             `<div class="actions" id="actions-${this.messages.length}">` +
             `<button onclick="send('continue')">▶ Continue</button>` +
             `<button onclick="send('edit')">✏️ Edit in Editor</button>` +
@@ -229,7 +243,11 @@ class ChatPanel {
             return `<span class="step-badge ${cls}">${icon} ${escHtml(label)}</span>`;
         }).join("");
         this.panel.webview.html = `<!DOCTYPE html>
-<html><head><style>
+<html><head>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<style>
   * { box-sizing: border-box; }
   body { font-family: var(--vscode-font-family); margin: 0; padding: 0;
          color: var(--vscode-foreground); background: var(--vscode-editor-background);
@@ -258,6 +276,16 @@ class ChatPanel {
     font-size: 13px; }
   .actions button:hover { background: var(--vscode-button-hoverBackground); }
   .error { color: var(--vscode-errorForeground); font-weight: bold; }
+  .markdown-body { padding: 8px 12px; line-height: 1.6; }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 8px 0 4px 0; }
+  .markdown-body p { margin: 4px 0; }
+  .markdown-body ul, .markdown-body ol { margin: 4px 0; padding-left: 20px; }
+  .markdown-body strong { color: var(--vscode-textLink-foreground); }
+  .markdown-body code { background: var(--vscode-terminal-background); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .markdown-body pre { background: var(--vscode-terminal-background); padding: 8px; border-radius: 4px; overflow: auto; }
+  .markdown-body pre code { padding: 0; background: none; }
+  .hljs { background: var(--vscode-terminal-background) !important; border-radius: 4px; padding: 10px; }
+  pre code.language-llvm { font-size: 12px; }
 </style></head><body>
   <div class="progress">${stepsHtml}</div>
   <div class="chat" id="chat">${msgsHtml}</div>
@@ -269,6 +297,20 @@ class ChatPanel {
       }
       vscode.postMessage({ type: 'userAction', action });
     }
+    // Render markdown blocks
+    document.querySelectorAll('.markdown-body[data-md]').forEach(el => {
+      try {
+        el.innerHTML = marked.parse(el.getAttribute('data-md') || '');
+      } catch(e) { /* fallback: leave as-is */ }
+    });
+    // Highlight LLVM IR code blocks
+    document.querySelectorAll('pre code.language-llvm').forEach(el => {
+      try { hljs.highlightElement(el); } catch(e) {}
+    });
+    // Also highlight any code blocks inside rendered markdown
+    document.querySelectorAll('.markdown-body pre code').forEach(el => {
+      try { hljs.highlightElement(el); } catch(e) {}
+    });
     // Auto-scroll
     const chat = document.getElementById('chat');
     if (chat) chat.scrollTop = chat.scrollHeight;
@@ -292,7 +334,7 @@ async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel)
         }
         // Steps 1-5: show content and let user review/edit
         if (PAUSE_STEPS.has(step) && result.content) {
-            const action = await chat.waitForUser(result.title || STEP_LABELS[step], result.content, result.file || "");
+            const action = await chat.waitForUser(result.title || STEP_LABELS[step], result.content, result.file || "", result.content_type);
             if (action === "edit" && result.file && fs.existsSync(result.file)) {
                 chat.addUser("Opening file for editing ...");
                 const doc = await vscode.workspace.openTextDocument(result.file);
@@ -307,11 +349,11 @@ async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel)
         else if (step === 6) {
             // Show final result with action buttons in webview
             if (result.content && result.output_file) {
-                const contentHtml = result.content.length > 8000
-                    ? escHtml(result.content.substring(0, 8000)) + "\n... (truncated)"
-                    : escHtml(result.content);
+                const truncated = result.content.length > 8000
+                    ? result.content.substring(0, 8000) + "\n... (truncated)"
+                    : result.content;
                 chat.addAssistant(`<div class="step-title">✅ Final Optimized IR</div>` +
-                    `<pre class="code-block">${contentHtml}</pre>` +
+                    `<pre><code class="language-llvm">${escHtml(truncated)}</code></pre>` +
                     `<div class="file-path">📄 ${escHtml(result.output_file)}</div>` +
                     `<div class="actions">` +
                     `<button onclick="send('continue')">▶ Continue</button>` +
@@ -343,19 +385,57 @@ async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel)
     const verifyChoice = await chat.waitForChoice("Verify Correctness?", "Run alive2 formal verification on the optimized IR?");
     if (verifyChoice === "yes") {
         chat.addUser("Yes, verify");
-        chat.setStep(7);
-        chat.addSystem(`Running ${STEP_LABELS[7]} ...`);
-        const { result: vResult, logs: vLogs } = await runStep(inputFile, outputDir, 7, outputChannel);
-        if (!vResult || vResult.status === "fail") {
-            chat.showError(`Verification failed.\n` +
-                (vLogs.length > 0 ? vLogs.slice(-5).join("\n") : "No output"));
-            return;
+        // Retry loop: verify → show errors → let user edit → re-verify
+        let verifyPassed = false;
+        while (!verifyPassed) {
+            chat.setStep(7);
+            chat.addSystem(`Running ${STEP_LABELS[7]} ...`);
+            const { result: vResult, logs: vLogs } = await runStep(inputFile, outputDir, 7, outputChannel);
+            if (!vResult || vResult.status === "fail") {
+                chat.showError(`Verification failed.\n` +
+                    (vLogs.length > 0 ? vLogs.slice(-5).join("\n") : "No output"));
+                return;
+            }
+            const verifyStatus = vResult.verify_status || "UNKNOWN";
+            chat.addAssistant(`<div class="step-title">${escHtml(vResult.title || "Verification")}</div>` +
+                `<pre class="code-block">${escHtml(vResult.content || "")}</pre>`);
+            if (verifyStatus === "PASS") {
+                verifyPassed = true;
+            }
+            else {
+                // Show error and offer retry
+                const outputFile = vResult.output_file || "";
+                chat.addAssistant(`<div class="error">Verification did not pass (${escHtml(verifyStatus)}).</div>` +
+                    `<div class="actions">` +
+                    `<button onclick="send('edit_retry')">✏️ Edit IR & Retry</button>` +
+                    `<button onclick="send('retry')">🔄 Retry Without Editing</button>` +
+                    `<button onclick="send('give_up')">⏹ Give Up</button>` +
+                    `</div>`);
+                const retryAction = await new Promise((resolve) => {
+                    chat.resolveUserAction = resolve;
+                });
+                if (retryAction === "edit_retry") {
+                    chat.addUser("Editing IR and retrying ...");
+                    if (outputFile && fs.existsSync(outputFile)) {
+                        const doc = await vscode.workspace.openTextDocument(outputFile);
+                        await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+                    }
+                    // Wait for user to finish editing
+                    await chat.waitForUser("Edit the optimized IR, save, then Continue to re-verify", "", outputFile);
+                    chat.addUser("Edits done, re-verifying ...");
+                    // Loop continues → re-runs step 7
+                }
+                else if (retryAction === "retry") {
+                    chat.addUser("Retrying verification ...");
+                    // Loop continues → re-runs step 7
+                }
+                else {
+                    chat.addUser("Giving up on verification");
+                    break;
+                }
+            }
         }
-        // Show verification result
-        const verifyStatus = vResult.verify_status || "UNKNOWN";
-        chat.addAssistant(`<div class="step-title">${escHtml(vResult.title || "Verification")}</div>` +
-            `<pre class="code-block">${escHtml(vResult.content || "")}</pre>`);
-        if (verifyStatus === "PASS") {
+        if (verifyPassed) {
             // Ask user: performance test?
             const perfChoice = await chat.waitForChoice("Performance Test?", "Verification passed! Run performance benchmarks?");
             if (perfChoice === "yes") {
@@ -374,10 +454,6 @@ async function runInteractivePipeline(inputFile, outputDir, chat, outputChannel)
             else {
                 chat.addUser("Skip performance test");
             }
-        }
-        else {
-            chat.addAssistant(`<div class="error">Verification did not pass (${escHtml(verifyStatus)}). ` +
-                `Performance testing requires verification to pass.</div>`);
         }
     }
     else {

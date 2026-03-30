@@ -441,6 +441,7 @@ class IROptimizer:
             log("STEP_RESULT:" + json.dumps({
                 "step": 3, "status": "ok",
                 "title": "Analysis Information (editable before LLM refinement)",
+                "content_type": "ir",
                 "content": analysis,
                 "file": prompt_file,
                 "dir": str(refine_dir),
@@ -467,6 +468,7 @@ class IROptimizer:
             log("STEP_RESULT:" + json.dumps({
                 "step": 4, "status": "ok",
                 "title": "Refined Optimization Strategy (Advice)",
+                "content_type": "markdown",
                 "content": advice,
                 "file": str(pred_files[0]) if pred_files else "",
                 "dir": str(refine_dir),
@@ -495,6 +497,7 @@ class IROptimizer:
             log("STEP_RESULT:" + json.dumps({
                 "step": 5, "status": "ok",
                 "title": "LLM-Generated Optimized IR",
+                "content_type": "ir",
                 "content": code,
                 "file": str(pred_files[0]) if pred_files else "",
                 "dir": str(realize_dir),
@@ -520,6 +523,7 @@ class IROptimizer:
             log("STEP_RESULT:" + json.dumps({
                 "step": 5, "status": "ok" if code else "fail",
                 "title": "Final Optimized IR",
+                "content_type": "ir",
                 "content": code,
                 "output_file": str(output_file) if code else "",
             }))
@@ -537,10 +541,15 @@ class IROptimizer:
                 }))
                 return None
 
-            # Prepare combined IR
+            # Prepare combined IR (rebuild each time to pick up edits)
             orig_file = dataset_dir / input_path.name
             verify_dir = temp / "verify"
             combined_dir = verify_dir / "combined"
+            # Clean old verify artifacts for retry
+            alive2_dir = verify_dir / "alive2"
+            for d in [combined_dir, alive2_dir, verify_dir / "harness", verify_dir / "bins"]:
+                if d.is_dir():
+                    shutil.rmtree(d)
             combined_dir.mkdir(parents=True, exist_ok=True)
             from modules.verification import build_combined_ir
             orig_ir = orig_file.read_text(encoding="utf-8")
@@ -588,8 +597,22 @@ class IROptimizer:
                 log("Alive2 did not pass, falling back to diff fuzzing ...")
                 harness_dir = str(verify_dir / "harness")
                 harness_cfg = getattr(cfg, "harness_dir", "")
-                if harness_cfg and Path(harness_cfg).is_dir() and any(Path(harness_cfg).glob("*.fuzz.cc")):
-                    harness_dir = harness_cfg
+
+                # For single-file mode, check if config harness dir has
+                # a matching harness; if not, generate one for this case only
+                if harness_cfg and Path(harness_cfg).is_dir():
+                    matching = Path(harness_cfg) / f"{stem}.fuzz.cc"
+                    if matching.exists():
+                        # Copy just the matching harness to local dir
+                        Path(harness_dir).mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(str(matching), harness_dir)
+                    else:
+                        self.diff_tester.generate_harnesses(
+                            str(combined_dir), harness_dir,
+                            model=getattr(cfg, "llm_model", "gpt-5"),
+                            api_mode=getattr(cfg, "api_mode", "auto"),
+                            workers=1,
+                        )
                 else:
                     self.diff_tester.generate_harnesses(
                         str(combined_dir), harness_dir,
@@ -634,6 +657,7 @@ class IROptimizer:
                 "title": f"Verification: {final_status}",
                 "content": "\n".join(summary_parts),
                 "verify_status": final_status,
+                "output_file": str(output_file),
             }))
             return final_status
 
@@ -658,8 +682,20 @@ class IROptimizer:
             # Build harness + fuzz binary
             harness_dir = str(perf_dir / "harness")
             harness_cfg = getattr(cfg, "harness_dir", "")
-            if harness_cfg and Path(harness_cfg).is_dir() and any(Path(harness_cfg).glob("*.fuzz.cc")):
-                harness_dir = harness_cfg
+
+            # For single-file mode, only use matching harness from config dir
+            if harness_cfg and Path(harness_cfg).is_dir():
+                matching = Path(harness_cfg) / f"{stem}.fuzz.cc"
+                if matching.exists():
+                    Path(harness_dir).mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(matching), harness_dir)
+                else:
+                    self.diff_tester.generate_harnesses(
+                        combined_dir, harness_dir,
+                        model=getattr(cfg, "llm_model", "gpt-5"),
+                        api_mode=getattr(cfg, "api_mode", "auto"),
+                        workers=1,
+                    )
             else:
                 self.diff_tester.generate_harnesses(
                     combined_dir, harness_dir,
@@ -674,16 +710,39 @@ class IROptimizer:
                 workers=getattr(cfg, "build_workers", 16),
             )
 
-            # Run perf
-            perf_harness_dir = getattr(cfg, "perf_harness_dir", "")
-            corpus_dir = getattr(cfg, "corpus_dir", "")
+            # Run perf — filter config dirs to matching stem for single-file mode
+            perf_harness_cfg = getattr(cfg, "perf_harness_dir", "")
+            corpus_cfg = getattr(cfg, "corpus_dir", "")
+
+            # If perf_harness_dir has a matching bench harness, copy just that one
+            local_perf_harness = ""
+            if perf_harness_cfg and Path(perf_harness_cfg).is_dir():
+                matching = Path(perf_harness_cfg) / f"{stem}.bench.cc"
+                if matching.exists():
+                    local_ph = perf_dir / "bench_harness_local"
+                    local_ph.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(matching), str(local_ph))
+                    local_perf_harness = str(local_ph)
+
+            # If corpus_dir has a matching corpus subdir, use just that
+            local_corpus = ""
+            if corpus_cfg and Path(corpus_cfg).is_dir():
+                matching_corpus = Path(corpus_cfg) / stem
+                if matching_corpus.is_dir() and any(matching_corpus.iterdir()):
+                    local_cd = perf_dir / "corpus_local"
+                    local_cd.mkdir(parents=True, exist_ok=True)
+                    dst = local_cd / stem
+                    if not dst.exists():
+                        shutil.copytree(str(matching_corpus), str(dst))
+                    local_corpus = str(local_cd)
+
             results = self.perf_tester.run_full(
                 combined_dir=combined_dir,
                 harness_dir=harness_dir,
                 fuzz_bin_dir=fuzz_bin_dir,
                 work_dir=str(perf_dir),
-                corpus_dir=corpus_dir,
-                perf_harness_dir=perf_harness_dir,
+                corpus_dir=local_corpus,
+                perf_harness_dir=local_perf_harness,
                 corpus_time=getattr(cfg, "corpus_time", 10),
                 corpus_workers=getattr(cfg, "corpus_workers", 0),
                 build_workers=getattr(cfg, "build_workers", 16),
