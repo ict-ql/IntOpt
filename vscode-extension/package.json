@@ -1,0 +1,98 @@
+{
+  "name": "intopt",
+  "displayName": "IntOpt: IR Optimizer",
+  "description": "Intent-Driven LLVM IR Optimization with LLMs",
+  "version": "0.1.0",
+  "publisher": "intopt",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:llvm"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "intopt.optimizeSelection",
+        "title": "IntOpt: Optimize Selected IR"
+      },
+      {
+        "command": "intopt.optimizeFile",
+        "title": "IntOpt: Optimize Entire File"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "intopt.optimizeSelection",
+          "when": "editorHasSelection && resourceExtname == .ll",
+          "group": "intopt"
+        },
+        {
+          "command": "intopt.optimizeFile",
+          "when": "resourceExtname == .ll",
+          "group": "intopt"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "IntOpt",
+      "properties": {
+        "intopt.condaEnv": {
+          "type": "string",
+          "default": "h100env",
+          "description": "Conda environment name. Uses 'conda run -n <env>' to execute. Leave empty to skip."
+        },
+        "intopt.pythonPath": {
+          "type": "string",
+          "default": "/home/amax/miniconda/envs/h100env/bin/python",
+          "description": "Path to Python interpreter (used when condaEnv is empty)"
+        },
+        "intopt.projectRoot": {
+          "type": "string",
+          "default": "/home/amax/yangz/intop",
+          "description": "Path to the IntOpt project root"
+        },
+        "intopt.configFile": {
+          "type": "string",
+          "default": "/home/amax/yangz/intop/config/config.yaml",
+          "description": "Path to IntOpt config YAML"
+        },
+        "intopt.llvmExtract": {
+          "type": "string",
+          "default": "/home/amax/yangz/Env/llvm-project/build/bin/llvm-extract",
+          "description": "Path to llvm-extract binary"
+        },
+        "intopt.outputDir": {
+          "type": "string",
+          "default": "",
+          "description": "Output directory (defaults to file's directory)"
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "llvm",
+        "extensions": [
+          ".ll"
+        ],
+        "aliases": [
+          "LLVM IR"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.9.3"
+  }
+}
