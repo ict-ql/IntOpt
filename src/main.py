@@ -37,7 +37,7 @@ class Config:
         "gpus": "0,1,2",
     }
 
-    _YAML_SECTIONS = ("model", "llvm", "llm", "run", "diff_testing", "perf_testing", "alive2")
+    _YAML_SECTIONS = ("model", "llvm", "llm", "run", "diff_testing", "perf_testing", "alive2", "intrinsic_advisor")
 
     def __init__(self, config_file=None, **kwargs):
         cfg = dict(self._DEFAULTS)
@@ -84,6 +84,32 @@ class IROptimizer:
             clangxx=getattr(config, "clangxx",
                             "/home/amax/yangz/Env/llvm-project/build/bin/clang++"),
         )
+        self._intrinsic_advisor = None
+
+    def _get_intrinsic_advice(self, ir_text: str) -> str:
+        """Retrieve intrinsic suggestions if enabled in config."""
+        cfg = self.config
+        if not getattr(cfg, "intrinsic_enabled", False):
+            return ""
+        kb_path = getattr(cfg, "intrinsic_kb_path", "")
+        emb_model = getattr(cfg, "intrinsic_embedding_model", "")
+        if not kb_path or not Path(kb_path).exists() or not emb_model:
+            return ""
+        try:
+            if self._intrinsic_advisor is None:
+                from modules.intrinsic_advisor import IntrinsicAdvisor
+                self._intrinsic_advisor = IntrinsicAdvisor(kb_path, emb_model)
+            top_k = getattr(cfg, "intrinsic_top_k", 10)
+            suggestions = self._intrinsic_advisor.suggest(
+                ir_text, self.llm,
+                model=getattr(cfg, "llm_model", "gpt-5"),
+                api_mode=getattr(cfg, "api_mode", "auto"),
+                top_k=top_k,
+            )
+            return self._intrinsic_advisor.format_suggestions(suggestions)
+        except Exception as e:
+            log(f"WARN: intrinsic advisor failed: {e}")
+            return ""
 
     # ------------------------------------------------------------------
     # Prompt rewriting (inject refined advice into the realization prompt)
@@ -178,6 +204,8 @@ class IROptimizer:
 
         # Step 3 — refine strategies (add analysis info to prompts)
         log("Step 3: Strategy refinement")
+        ir_text = (dataset_dir / input_path.name).read_text(encoding="utf-8")
+        intrinsic_text = self._get_intrinsic_advice(ir_text)
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
             ll_dir=str(dataset_dir),
@@ -185,6 +213,7 @@ class IROptimizer:
             out_dir=str(temp / "step3_refinement"),
             timeout=cfg.timeout,
             verify_timeout=cfg.verify_timeout,
+            intrinsic_advice=intrinsic_text,
         )
 
         # Step 3b — LLM-based strategy refinement
@@ -257,6 +286,8 @@ class IROptimizer:
 
         # Step 3
         log("Step 3: Strategy refinement")
+        # Note: intrinsic advice in batch mode is not per-file;
+        # set intrinsic_enabled=false for batch or enhance refine() later
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
             ll_dir=data_path,
@@ -416,9 +447,36 @@ class IROptimizer:
 
         elif step == 3:
             # Step 3a: Strategy refinement — build prompt with analysis
-            # (LLM call is deferred to step 3b so user can edit analysis first)
+            # Optionally include intrinsic suggestions from KB
             mapping_dir = str(temp / "step2_mapping")
             initial_dir = str(temp / "step1_initial")
+
+            # Intrinsic advisor: retrieve relevant intrinsics if enabled
+            intrinsic_text = ""
+            if getattr(cfg, "intrinsic_enabled", False):
+                kb_path = getattr(cfg, "intrinsic_kb_path", "")
+                emb_model = getattr(cfg, "intrinsic_embedding_model", "")
+                if kb_path and Path(kb_path).exists() and emb_model:
+                    try:
+                        from modules.intrinsic_advisor import IntrinsicAdvisor
+                        advisor = IntrinsicAdvisor(kb_path, emb_model)
+                        # Read the IR for summary
+                        ir_file = list(Path(str(dataset_dir)).glob("*.ll"))
+                        if ir_file:
+                            ir_text = ir_file[0].read_text(encoding="utf-8")
+                            top_k = getattr(cfg, "intrinsic_top_k", 10)
+                            suggestions = advisor.suggest(
+                                ir_text, self.llm,
+                                model=getattr(cfg, "llm_model", "gpt-5"),
+                                api_mode=getattr(cfg, "api_mode", "auto"),
+                                top_k=top_k,
+                            )
+                            intrinsic_text = advisor.format_suggestions(suggestions)
+                            if intrinsic_text:
+                                log(f"  Retrieved {len(suggestions)} intrinsic suggestions")
+                    except Exception as e:
+                        log(f"  WARN: intrinsic advisor failed: {e}")
+
             log("Step 3: Strategy refinement (building prompt)")
             refine_dir = self.strategy_refine.refine(
                 in_dir=mapping_dir,
@@ -427,22 +485,30 @@ class IROptimizer:
                 out_dir=str(temp / "step3_refinement"),
                 timeout=cfg.timeout,
                 verify_timeout=cfg.verify_timeout,
+                intrinsic_advice=intrinsic_text,
             )
 
             # Output analysis from prompt for user review BEFORE LLM call
             prompt_files = list(Path(refine_dir).glob("*.prompt.ll"))
             analysis = ""
+            intrinsics_block = ""
             prompt_file = ""
             if prompt_files:
                 prompt_file = str(prompt_files[0])
                 raw = prompt_files[0].read_text(encoding="utf-8")
                 analysis = extract_single_block(raw, "analysis") or ""
+                intrinsics_block = extract_single_block(raw, "intrinsics") or ""
+
+            # Combine analysis + intrinsics for display
+            display_content = analysis
+            if intrinsics_block:
+                display_content += "\n\n--- Intrinsic Suggestions ---\n" + intrinsics_block
 
             log("STEP_RESULT:" + json.dumps({
                 "step": 3, "status": "ok",
-                "title": "Analysis Information (editable before LLM refinement)",
+                "title": "Analysis & Intrinsic Suggestions (editable before LLM refinement)",
                 "content_type": "ir",
-                "content": analysis,
+                "content": display_content,
                 "file": prompt_file,
                 "dir": str(refine_dir),
             }))

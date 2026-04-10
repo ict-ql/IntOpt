@@ -109,6 +109,19 @@ Outputs:
 - `perf_report.csv` — One row per test case (averaged speedup).
 - `perf_report_detail.csv` — One row per (test case, corpus file).
 
+### intrinsic advisor
+
+#### 创建knowledge base
+# 只处理 1 个 intrinsic，调试用
+python scripts/build_intrinsic_kb.py --config config/config.yaml --limit 1 --archs x86,generic
+
+# 处理 5 个
+python scripts/build_intrinsic_kb.py --config config/config.yaml --limit 5
+
+# 全量
+python scripts/build_intrinsic_kb.py --config config/config.yaml
+
+
 ## Configuration
 
 All settings live in `config/config.yaml`:

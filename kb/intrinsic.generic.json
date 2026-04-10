@@ -1,0 +1,2392 @@
+[
+  {
+    "name": "llvm.abs",
+    "arch": "generic",
+    "description": "Integer absolute value with defined overflow behavior; used in numeric code, distance/magnitude calculations, and branchless abs on vectors."
+  },
+  {
+    "name": "llvm.acos",
+    "arch": "generic",
+    "description": "Floating-point arccosine; used in geometry, signal processing, and graphics shading."
+  },
+  {
+    "name": "llvm.addressofreturnaddress",
+    "arch": "generic",
+    "description": "Returns the address where the current function’s return address is stored; used for low-level stack introspection, sanitizers, and security instrumentation."
+  },
+  {
+    "name": "llvm.adjust.trampoline",
+    "arch": "generic",
+    "description": "Adjusts a trampoline pointer to a callable target per ABI; used to implement nested functions/closures that need a static chain."
+  },
+  {
+    "name": "llvm.allow.runtime.check",
+    "arch": "generic",
+    "description": "Hint that introducing runtime checks is semantically allowed; used to enable loop versioning, alias/bounds checks, and speculative optimizations."
+  },
+  {
+    "name": "llvm.allow.ubsan.check",
+    "arch": "generic",
+    "description": "Hint to preserve/allow UndefinedBehaviorSanitizer checks on a value; used to prevent optimizations from eliding sanitizer diagnostics."
+  },
+  {
+    "name": "llvm.annotation",
+    "arch": "generic",
+    "description": "Attaches a frontend annotation string to a value (returns the value); used by __attribute__((annotate)) for tooling, analysis, and optimization guidance."
+  },
+  {
+    "name": "llvm.arithmetic.fence",
+    "arch": "generic",
+    "description": "Prevents reassociation and certain arithmetic transformations across it; used to enforce evaluation order (e.g., FP exceptions) or to isolate regions for analysis."
+  },
+  {
+    "name": "llvm.asan.check.memaccess",
+    "arch": "generic",
+    "description": "AddressSanitizer memory access check for a load/store; inserted to validate accesses at runtime and report out-of-bounds/use-after-free."
+  },
+  {
+    "name": "llvm.asin",
+    "arch": "generic",
+    "description": "Floating-point arcsine; used in geometry, signal processing, and graphics shading."
+  },
+  {
+    "name": "llvm.assume",
+    "arch": "generic",
+    "description": "Asserts a condition to the optimizer (undefined if false) without generating code; used for range info, vectorization, and dead-code elimination guidance."
+  },
+  {
+    "name": "llvm.atan",
+    "arch": "generic",
+    "description": "Floating-point arctangent; used in angle computations, coordinate transforms, and signal processing."
+  },
+  {
+    "name": "llvm.bitreverse",
+    "arch": "generic",
+    "description": "Reverses the bit order of an integer; used in FFT bit-reversal permutations, cryptography, and bitboard algorithms."
+  },
+  {
+    "name": "llvm.bswap",
+    "arch": "generic",
+    "description": "Reverses the byte order of an integer; used for endianness conversions (e.g., network/host order) and fast serialization."
+  },
+  {
+    "name": "llvm.call.preallocated.arg",
+    "arch": "generic",
+    "description": "Associates a caller-provided preallocated buffer with a call’s preallocated return/result; used to pass storage to callees and avoid dynamic allocation."
+  },
+  {
+    "name": "llvm.call.preallocated.setup",
+    "arch": "generic",
+    "description": "Sets up (and returns) the pointer/token for a call’s preallocated return storage before the call; used to prepare caller-side buffers."
+  },
+  {
+    "name": "llvm.call.preallocated.teardown",
+    "arch": "generic",
+    "description": "Tears down the preallocated return storage after the call (lifetime end); used to finalize caller-provided result buffers."
+  },
+  {
+    "name": "llvm.callbr.landingpad",
+    "arch": "generic",
+    "description": "Produces an EH landing-pad-like token for callbr/asm-goto unwinding; used to model exceptional control flow with callbr/inline asm."
+  },
+  {
+    "name": "llvm.canonicalize",
+    "arch": "generic",
+    "description": "Canonicalizes a floating value (e.g., -0 to +0, sNaN to qNaN); used to normalize results for reproducibility and simplify comparisons/hashing."
+  },
+  {
+    "name": "llvm.ceil",
+    "arch": "generic",
+    "description": "Floating-point ceiling (round toward +∞); used in tiling, grid/texture mapping, and size/alignment computations."
+  },
+  {
+    "name": "llvm.clear_cache",
+    "arch": "generic",
+    "description": "Flushes the instruction cache for an address range; used by JITs, self-modifying code, and dynamic code loaders to ensure newly generated code is executable."
+  },
+  {
+    "name": "llvm.codeview.annotation",
+    "arch": "generic",
+    "description": "Emits a CodeView debug annotation string (no runtime effect); used to support MSVC __annotation and tooling markers in PDBs for diagnostics/profiling."
+  },
+  {
+    "name": "llvm.convert.from.fp16",
+    "arch": "generic",
+    "description": "Converts an IEEE-754 binary16 bit pattern (i16) to a wider float/double; used on targets without native half to read half-precision data."
+  },
+  {
+    "name": "llvm.convert.to.fp16",
+    "arch": "generic",
+    "description": "Converts a float/double to an IEEE-754 binary16 bit pattern (i16) with rounding; used to store/pack half-precision values on targets without native half."
+  },
+  {
+    "name": "llvm.copysign",
+    "arch": "generic",
+    "description": "Returns the first operand with its sign bit set to the second operand’s sign; used to implement copysign in numeric code and sign manipulation."
+  },
+  {
+    "name": "llvm.coro.align",
+    "arch": "generic",
+    "description": "Yields the required alignment for the coroutine frame; used to allocate the frame with correct alignment (e.g., operator new alignment)."
+  },
+  {
+    "name": "llvm.coro.alloc",
+    "arch": "generic",
+    "description": "Indicates whether the coroutine frame needs dynamic allocation; used to guard/skip calling the frame allocator when elidable."
+  },
+  {
+    "name": "llvm.coro.alloca.alloc",
+    "arch": "generic",
+    "description": "Reserves dynamic stack-like storage that may be promoted into the coroutine frame across suspends; used for variable-size allocas in coroutines."
+  },
+  {
+    "name": "llvm.coro.alloca.free",
+    "arch": "generic",
+    "description": "Marks the end of the lifetime of storage from coro.alloca.alloc; used to free such storage at the right point across coroutine splits."
+  },
+  {
+    "name": "llvm.coro.alloca.get",
+    "arch": "generic",
+    "description": "Produces the usable pointer for storage reserved by coro.alloca.alloc given the coroutine frame; used to access that memory after setup."
+  },
+  {
+    "name": "llvm.coro.async.context.alloc",
+    "arch": "generic",
+    "description": "Allocates the async coroutine context/state block; used by async coroutine lowering to create state for resumption."
+  },
+  {
+    "name": "llvm.coro.async.context.dealloc",
+    "arch": "generic",
+    "description": "Frees the async coroutine context/state block; used when an async coroutine completes or is destroyed."
+  },
+  {
+    "name": "llvm.coro.async.resume",
+    "arch": "generic",
+    "description": "Resumes an async coroutine using its context; used to implement resumption paths for co_await/co_return."
+  },
+  {
+    "name": "llvm.coro.async.size.replace",
+    "arch": "generic",
+    "description": "Replaces a placeholder size for the async context with a known constant post-splitting; used to fix allocation size after coroutine analysis."
+  },
+  {
+    "name": "llvm.coro.await.suspend.bool",
+    "arch": "generic",
+    "description": "Lowers await_suspend returning bool: sets up suspension and yields the decision to suspend; used for awaiters that may choose not to suspend."
+  },
+  {
+    "name": "llvm.coro.await.suspend.handle",
+    "arch": "generic",
+    "description": "Lowers await_suspend returning coroutine_handle: sets up suspension and obtains the continuation handle; used for awaiters that redirect continuation."
+  },
+  {
+    "name": "llvm.coro.await.suspend.void",
+    "arch": "generic",
+    "description": "Lowers await_suspend returning void: sets up an unconditional suspension; used for awaiters that always suspend."
+  },
+  {
+    "name": "llvm.coro.begin",
+    "arch": "generic",
+    "description": "Creates/initializes the coroutine frame and returns the coroutine handle; used at coroutine entry to set up state and use any allocated storage."
+  },
+  {
+    "name": "llvm.coro.destroy",
+    "arch": "generic",
+    "description": "Destroys a coroutine: runs final cleanup and releases its frame; used by co_destroy or when a coroutine is explicitly/implicitly destroyed."
+  },
+  {
+    "name": "llvm.coro.done",
+    "arch": "generic",
+    "description": "Tests whether the coroutine has reached its final suspend (completed); used to implement coroutine_handle::done() and completion checks."
+  },
+  {
+    "name": "llvm.coro.end",
+    "arch": "generic",
+    "description": "Marks coroutine termination and performs final-suspend/cleanup; used at co_return/final suspend to destroy/deallocate the frame."
+  },
+  {
+    "name": "llvm.coro.end.async",
+    "arch": "generic",
+    "description": "Async-specific end; signals completion and schedules continuation; used in async/await lowering for platform async runtimes."
+  },
+  {
+    "name": "llvm.coro.end.results",
+    "arch": "generic",
+    "description": "Extracts/propagates results produced at coroutine completion; used to materialize return values in async/retcon models."
+  },
+  {
+    "name": "llvm.coro.frame",
+    "arch": "generic",
+    "description": "Returns a pointer to the coroutine frame; used to access the promise and spilled state inside the coroutine."
+  },
+  {
+    "name": "llvm.coro.free",
+    "arch": "generic",
+    "description": "Deallocates a coroutine frame; used when destroying a coroutine or after completion/cancellation."
+  },
+  {
+    "name": "llvm.coro.id",
+    "arch": "generic",
+    "description": "Creates a coroutine identifier token; used to drive lowering, frame layout, and sub-function address queries."
+  },
+  {
+    "name": "llvm.coro.id.async",
+    "arch": "generic",
+    "description": "Creates an identifier for async coroutines; used by async/await lowering to build platform-specific state machines."
+  },
+  {
+    "name": "llvm.coro.id.retcon",
+    "arch": "generic",
+    "description": "Identifier for retcon (return-continuation) coroutines; used when suspension returns a continuation to the caller."
+  },
+  {
+    "name": "llvm.coro.id.retcon.once",
+    "arch": "generic",
+    "description": "Retcon ID for coroutines that suspend at most once; enables tighter frames and optimized lowering for single-suspend generators."
+  },
+  {
+    "name": "llvm.coro.noop",
+    "arch": "generic",
+    "description": "Produces a handle to a no-op coroutine (resume/destroy do nothing); useful for awaiters that never suspend or default continuations."
+  },
+  {
+    "name": "llvm.coro.prepare.async",
+    "arch": "generic",
+    "description": "Prepares an async coroutine for suspension/resumption with a continuation/context; used to hook callbacks in async runtimes."
+  },
+  {
+    "name": "llvm.coro.prepare.retcon",
+    "arch": "generic",
+    "description": "Prepares a retcon coroutine and constructs a returnable continuation object; used to hand a callable continuation back at suspend."
+  },
+  {
+    "name": "llvm.coro.promise",
+    "arch": "generic",
+    "description": "Returns the promise object address in the frame; used to exchange results/exceptions between the coroutine and its consumer."
+  },
+  {
+    "name": "llvm.coro.resume",
+    "arch": "generic",
+    "description": "Calls the coroutine’s resume sub-function; used by handles/runtimes to continue execution from a saved suspend point."
+  },
+  {
+    "name": "llvm.coro.save",
+    "arch": "generic",
+    "description": "Saves the current suspend point into the frame; used before co_await/co_yield to capture where to resume."
+  },
+  {
+    "name": "llvm.coro.size",
+    "arch": "generic",
+    "description": "Returns the required frame size in bytes; used to allocate storage for the coroutine frame (heap/arena/stack)."
+  },
+  {
+    "name": "llvm.coro.subfn.addr",
+    "arch": "generic",
+    "description": "Returns address of a coroutine sub-function (resume/destroy/cleanup); used to build handles/vtables and wire resumption/destruction."
+  },
+  {
+    "name": "llvm.coro.suspend",
+    "arch": "generic",
+    "description": "Performs a suspend and yields control; used to implement co_await/co_yield/final-suspend and drive resume/cleanup paths."
+  },
+  {
+    "name": "llvm.coro.suspend.async",
+    "arch": "generic",
+    "description": "Async suspend integrating with platform continuations; used to schedule and return control in async/await lowering."
+  },
+  {
+    "name": "llvm.coro.suspend.retcon",
+    "arch": "generic",
+    "description": "Retcon suspend that packages a continuation to be returned; used when suspension returns a callable continuation to the caller."
+  },
+  {
+    "name": "llvm.cos",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.cos"
+  },
+  {
+    "name": "llvm.cosh",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.cosh"
+  },
+  {
+    "name": "llvm.ctlz",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.ctlz"
+  },
+  {
+    "name": "llvm.ctpop",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.ctpop"
+  },
+  {
+    "name": "llvm.cttz",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.cttz"
+  },
+  {
+    "name": "llvm.dbg.assign",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.dbg.assign"
+  },
+  {
+    "name": "llvm.dbg.declare",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.dbg.declare"
+  },
+  {
+    "name": "llvm.dbg.label",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.dbg.label"
+  },
+  {
+    "name": "llvm.dbg.value",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.dbg.value"
+  },
+  {
+    "name": "llvm.debugtrap",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.debugtrap"
+  },
+  {
+    "name": "llvm.donothing",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.donothing"
+  },
+  {
+    "name": "llvm.eh.dwarf.cfa",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.dwarf.cfa"
+  },
+  {
+    "name": "llvm.eh.exceptioncode",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.exceptioncode"
+  },
+  {
+    "name": "llvm.eh.exceptionpointer",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.exceptionpointer"
+  },
+  {
+    "name": "llvm.eh.recoverfp",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.recoverfp"
+  },
+  {
+    "name": "llvm.eh.return.i32",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.return.i32"
+  },
+  {
+    "name": "llvm.eh.return.i64",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.return.i64"
+  },
+  {
+    "name": "llvm.eh.sjlj.callsite",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.sjlj.callsite"
+  },
+  {
+    "name": "llvm.eh.sjlj.functioncontext",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.sjlj.functioncontext"
+  },
+  {
+    "name": "llvm.eh.sjlj.longjmp",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.eh.sjlj.longjmp"
+  },
+  {
+    "name": "llvm.eh.sjlj.lsda",
+    "arch": "generic",
+    "description": "Returns the function’s LSDA pointer for SJLJ exception handling; used in the dispatch block to select the right landing pad."
+  },
+  {
+    "name": "llvm.eh.sjlj.setjmp",
+    "arch": "generic",
+    "description": "Sets a jmp buffer for SJLJ EH; returns 0 initially and nonzero on unwind; used to establish the per-function exception dispatch point."
+  },
+  {
+    "name": "llvm.eh.sjlj.setup.dispatch",
+    "arch": "generic",
+    "description": "Sets up and registers the function’s SJLJ dispatch with the runtime; used at entry to prepare exception dispatch and landing pads."
+  },
+  {
+    "name": "llvm.eh.typeid.for",
+    "arch": "generic",
+    "description": "Computes a small integer type ID for a typeinfo pointer; used in C++ EH to test catch clauses and type filters."
+  },
+  {
+    "name": "llvm.eh.unwind.init",
+    "arch": "generic",
+    "description": "Initializes or marks the start of unwindable state for the function; used by EH lowering on targets that require explicit prologue marking."
+  },
+  {
+    "name": "llvm.exp",
+    "arch": "generic",
+    "description": "Natural exponential e^x; used in scientific kernels, normalization, and numeric transforms."
+  },
+  {
+    "name": "llvm.exp10",
+    "arch": "generic",
+    "description": "Base-10 exponential 10^x; used in decimal scaling and inverse log10 computations."
+  },
+  {
+    "name": "llvm.exp2",
+    "arch": "generic",
+    "description": "Base-2 exponential 2^x; used in exponent scaling, bit-level transforms, and DSP."
+  },
+  {
+    "name": "llvm.expect",
+    "arch": "generic",
+    "description": "Branch prediction hint that a value is likely equal to an expected value; guides code layout and static prediction."
+  },
+  {
+    "name": "llvm.expect.with.probability",
+    "arch": "generic",
+    "description": "Prediction hint with an explicit probability; attaches precise branch weights from heuristics or PGO."
+  },
+  {
+    "name": "llvm.experimental.constrained.acos",
+    "arch": "generic",
+    "description": "Strict IEEE acos that respects FP environment and exceptions; used under strict or fenv-sensitive FP modes."
+  },
+  {
+    "name": "llvm.experimental.constrained.asin",
+    "arch": "generic",
+    "description": "Strict IEEE asin that respects FP environment and exceptions; used when preserving fenv and reproducibility."
+  },
+  {
+    "name": "llvm.experimental.constrained.atan",
+    "arch": "generic",
+    "description": "Strict IEEE atan that respects FP environment and exceptions; used for strict or precise FP semantics."
+  },
+  {
+    "name": "llvm.experimental.constrained.ceil",
+    "arch": "generic",
+    "description": "Strict ceil with preserved FP exception behavior and no unsafe reordering; used under strict FP models."
+  },
+  {
+    "name": "llvm.experimental.constrained.cos",
+    "arch": "generic",
+    "description": "Strict IEEE cos that respects FP environment and exceptions; used in fenv-aware or reproducible math code."
+  },
+  {
+    "name": "llvm.experimental.constrained.cosh",
+    "arch": "generic",
+    "description": "Strict IEEE cosh that respects FP environment and exceptions; used when fenv and exceptions must be honored."
+  },
+  {
+    "name": "llvm.experimental.constrained.exp",
+    "arch": "generic",
+    "description": "Strict IEEE exp that respects rounding mode and FP exceptions; used under strict FP or fenv-sensitive code."
+  },
+  {
+    "name": "llvm.experimental.constrained.exp2",
+    "arch": "generic",
+    "description": "Strict IEEE exp2 that respects rounding mode and FP exceptions; used for precise FP semantics."
+  },
+  {
+    "name": "llvm.experimental.constrained.fadd",
+    "arch": "generic",
+    "description": "Strict floating add honoring specified rounding and exception behavior; used to preserve IEEE semantics and block reassociation."
+  },
+  {
+    "name": "llvm.experimental.constrained.fcmp",
+    "arch": "generic",
+    "description": "Strict floating compare preserving IEEE NaN and exception semantics; used when comparisons may raise exceptions and must not be reordered."
+  },
+  {
+    "name": "llvm.experimental.constrained.fcmps",
+    "arch": "generic",
+    "description": "Signaling FP compare with strict IEEE semantics (may raise on NaNs); used when comparisons must honor FP exceptions/flags in strict/precise FP modes."
+  },
+  {
+    "name": "llvm.experimental.constrained.fdiv",
+    "arch": "generic",
+    "description": "Strict floating-point division respecting rounding mode and exception behavior; used for reproducible/exception-aware division in strict FP code."
+  },
+  {
+    "name": "llvm.experimental.constrained.floor",
+    "arch": "generic",
+    "description": "Strict floor (round toward −∞) with correct FP flag behavior; used where IEEE exceptions/flags must be preserved."
+  },
+  {
+    "name": "llvm.experimental.constrained.fma",
+    "arch": "generic",
+    "description": "Strict fused multiply-add (one rounding) honoring FP env; used for reproducible FMAs in numerics and performance-critical kernels."
+  },
+  {
+    "name": "llvm.experimental.constrained.fmul",
+    "arch": "generic",
+    "description": "Strict floating-point multiply respecting rounding mode and exceptions; used when exact IEEE behavior is required."
+  },
+  {
+    "name": "llvm.experimental.constrained.fmuladd",
+    "arch": "generic",
+    "description": "Strict multiply-add that may contract to FMA per constraints; used to express x*y+z with optional fusion while preserving FP env semantics."
+  },
+  {
+    "name": "llvm.experimental.constrained.fpext",
+    "arch": "generic",
+    "description": "Strict floating-point widen (e.g., float→double) with correct FP flag tracking; used when conversions must honor the FP environment."
+  },
+  {
+    "name": "llvm.experimental.constrained.fptosi",
+    "arch": "generic",
+    "description": "Strict FP-to-signed-int convert honoring rounding/exceptions; used when casts must trap/set flags per IEEE/C semantics."
+  },
+  {
+    "name": "llvm.experimental.constrained.fptoui",
+    "arch": "generic",
+    "description": "Strict FP-to-unsigned-int convert honoring rounding/exceptions; used for precise casts that must respect FP env."
+  },
+  {
+    "name": "llvm.experimental.constrained.fptrunc",
+    "arch": "generic",
+    "description": "Strict floating-point narrow (e.g., double→float) with specified rounding and exceptions; used for reproducible casts."
+  },
+  {
+    "name": "llvm.experimental.constrained.frem",
+    "arch": "generic",
+    "description": "Strict FP remainder (like C fmod: x − trunc(x/y)*y) with correct FP flags; used when remainder must follow IEEE/C semantics."
+  },
+  {
+    "name": "llvm.experimental.constrained.fsub",
+    "arch": "generic",
+    "description": "Strict floating-point subtraction respecting rounding mode and exceptions; used in strict/precise FP paths."
+  },
+  {
+    "name": "llvm.experimental.constrained.ldexp",
+    "arch": "generic",
+    "description": "Strict ldexp: scale x by 2^exp with FP env semantics; used in constructing/scaling FP values and math libraries."
+  },
+  {
+    "name": "llvm.experimental.constrained.llrint",
+    "arch": "generic",
+    "description": "Strict llrint: round to long long using current rounding mode, setting FP flags; used when honoring the thread’s rounding mode."
+  },
+  {
+    "name": "llvm.experimental.constrained.llround",
+    "arch": "generic",
+    "description": "Strict llround: round to nearest, ties away from zero, to long long with proper exceptions; used for deterministic integer rounding."
+  },
+  {
+    "name": "llvm.experimental.constrained.log",
+    "arch": "generic",
+    "description": "Strict natural logarithm with FP env semantics; used in libm and code needing reproducible exceptions/rounding."
+  },
+  {
+    "name": "llvm.experimental.constrained.log10",
+    "arch": "generic",
+    "description": "Strict base-10 logarithm with FP env semantics; used where decimal-scale logs must honor exceptions/rounding."
+  },
+  {
+    "name": "llvm.experimental.constrained.log2",
+    "arch": "generic",
+    "description": "Strict base-2 logarithm with FP env semantics; used in algorithms needing log2 with precise IEEE behavior."
+  },
+  {
+    "name": "llvm.experimental.constrained.lrint",
+    "arch": "generic",
+    "description": "Strict lrint: round to long using current rounding mode, setting FP flags; used when the active rounding mode must be obeyed."
+  },
+  {
+    "name": "llvm.experimental.constrained.lround",
+    "arch": "generic",
+    "description": "Strict lround: round to nearest, ties away from zero, to long with proper exceptions; used for stable, standards-compliant rounding."
+  },
+  {
+    "name": "llvm.experimental.constrained.maximum",
+    "arch": "generic",
+    "description": "IEEE-754-2019 maximum (total order; propagates NaN); constrained FP for strict max with correct NaN/-0/+0 handling."
+  },
+  {
+    "name": "llvm.experimental.constrained.maxnum",
+    "arch": "generic",
+    "description": "IEEE-754 maxNum (like C fmax): numeric maximum, ignore single NaN; constrained FP for strict min/max and reductions."
+  },
+  {
+    "name": "llvm.experimental.constrained.minimum",
+    "arch": "generic",
+    "description": "IEEE-754-2019 minimum (total order; propagates NaN); constrained FP for strict min with correct NaN/-0/+0 handling."
+  },
+  {
+    "name": "llvm.experimental.constrained.minnum",
+    "arch": "generic",
+    "description": "IEEE-754 minNum (like C fmin): numeric minimum, ignore single NaN; constrained FP for strict min and reductions."
+  },
+  {
+    "name": "llvm.experimental.constrained.nearbyint",
+    "arch": "generic",
+    "description": "Round to integral using current rounding mode, no inexact; constrained FP for fenv-aware rounding."
+  },
+  {
+    "name": "llvm.experimental.constrained.pow",
+    "arch": "generic",
+    "description": "x^y with IEEE exceptions/rounding control; constrained FP for strict libm pow in scientific code."
+  },
+  {
+    "name": "llvm.experimental.constrained.powi",
+    "arch": "generic",
+    "description": "x^n with integer exponent; constrained FP, optimizable by squaring; tight loops/polynomials."
+  },
+  {
+    "name": "llvm.experimental.constrained.rint",
+    "arch": "generic",
+    "description": "Round to integral using current rounding mode, may raise inexact; constrained FP for fenv-aware rounding."
+  },
+  {
+    "name": "llvm.experimental.constrained.round",
+    "arch": "generic",
+    "description": "Round to nearest, ties away from zero; constrained FP for strict C round."
+  },
+  {
+    "name": "llvm.experimental.constrained.roundeven",
+    "arch": "generic",
+    "description": "Round to nearest, ties-to-even; constrained FP for banker’s rounding in finance/signal processing."
+  },
+  {
+    "name": "llvm.experimental.constrained.sin",
+    "arch": "generic",
+    "description": "Sine with controlled exceptions/rounding; constrained FP for strict libm sin in DSP/graphics."
+  },
+  {
+    "name": "llvm.experimental.constrained.sinh",
+    "arch": "generic",
+    "description": "Hyperbolic sine with controlled exceptions/rounding; constrained FP for scientific computing."
+  },
+  {
+    "name": "llvm.experimental.constrained.sitofp",
+    "arch": "generic",
+    "description": "Signed int to float with specified rounding/exception behavior; constrained FP for trapping or fenv-aware conversions."
+  },
+  {
+    "name": "llvm.experimental.constrained.sqrt",
+    "arch": "generic",
+    "description": "Square root with controlled exceptions/rounding; constrained FP for precise sqrt in numerics/graphics."
+  },
+  {
+    "name": "llvm.experimental.constrained.tan",
+    "arch": "generic",
+    "description": "Tangent with controlled exceptions/rounding; constrained FP for strict trig math."
+  },
+  {
+    "name": "llvm.experimental.constrained.tanh",
+    "arch": "generic",
+    "description": "Hyperbolic tangent with controlled exceptions/rounding; constrained FP for ML activations/numerics."
+  },
+  {
+    "name": "llvm.experimental.constrained.trunc",
+    "arch": "generic",
+    "description": "Round toward zero; constrained FP for strict C trunc regardless of current mode."
+  },
+  {
+    "name": "llvm.experimental.constrained.uitofp",
+    "arch": "generic",
+    "description": "Unsigned int to float with specified rounding/exception behavior; constrained FP for strict conversions."
+  },
+  {
+    "name": "llvm.experimental.convergence.anchor",
+    "arch": "generic",
+    "description": "Marks a dynamic convergence point; prevents code motion/duplication across it; used for GPU/SIMT convergent ops (ballot, barrier)."
+  },
+  {
+    "name": "llvm.experimental.convergence.entry",
+    "arch": "generic",
+    "description": "Marks start/root of a convergence region for threads; used at GPU kernel/parallel entry to preserve reconvergence."
+  },
+  {
+    "name": "llvm.experimental.convergence.loop",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.convergence.loop"
+  },
+  {
+    "name": "llvm.experimental.cttz.elts",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.cttz.elts"
+  },
+  {
+    "name": "llvm.experimental.deoptimize",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.deoptimize"
+  },
+  {
+    "name": "llvm.experimental.gc.get.pointer.base",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.gc.get.pointer.base"
+  },
+  {
+    "name": "llvm.experimental.gc.get.pointer.offset",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.gc.get.pointer.offset"
+  },
+  {
+    "name": "llvm.experimental.gc.relocate",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.gc.relocate"
+  },
+  {
+    "name": "llvm.experimental.gc.result",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.gc.result"
+  },
+  {
+    "name": "llvm.experimental.gc.statepoint",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.gc.statepoint"
+  },
+  {
+    "name": "llvm.experimental.get.vector.length",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.get.vector.length"
+  },
+  {
+    "name": "llvm.experimental.guard",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.guard"
+  },
+  {
+    "name": "llvm.experimental.noalias.scope.decl",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.noalias.scope.decl"
+  },
+  {
+    "name": "llvm.experimental.patchpoint",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.patchpoint"
+  },
+  {
+    "name": "llvm.experimental.patchpoint.void",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.patchpoint.void"
+  },
+  {
+    "name": "llvm.experimental.stackmap",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.stackmap"
+  },
+  {
+    "name": "llvm.experimental.stepvector",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.stepvector"
+  },
+  {
+    "name": "llvm.experimental.vector.compress",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.vector.compress"
+  },
+  {
+    "name": "llvm.experimental.vector.histogram.add",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.vector.histogram.add"
+  },
+  {
+    "name": "llvm.experimental.vector.partial.reduce.add",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.vector.partial.reduce.add"
+  },
+  {
+    "name": "llvm.experimental.vp.reverse",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.vp.reverse"
+  },
+  {
+    "name": "llvm.experimental.vp.splat",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.experimental.vp.splat"
+  },
+  {
+    "name": "llvm.experimental.vp.splice",
+    "arch": "generic",
+    "description": "Predicated vector splice: combine two vectors by shifting in elements from the second at a given offset under mask/EVL; used for sliding-window shifts and cross-lane moves (e.g., SVE/RVV) in stencil/FIR kernels."
+  },
+  {
+    "name": "llvm.experimental.vp.strided.load",
+    "arch": "generic",
+    "description": "Predicated strided vector load with explicit vector length; loads base + i*stride for active lanes; used for vectorizing affine non-unit-stride accesses (AoS/SoA, column loads)."
+  },
+  {
+    "name": "llvm.experimental.vp.strided.store",
+    "arch": "generic",
+    "description": "Predicated strided vector store with explicit vector length; stores to base + i*stride for active lanes; used for vectorized non-unit-stride stores and interleaved data layouts."
+  },
+  {
+    "name": "llvm.experimental.widenable.condition",
+    "arch": "generic",
+    "description": "A condition the optimizer may only widen to true; AND it with guards to enable unswitching/versioning/speculation while preserving correctness; used in guards and loop optimizations."
+  },
+  {
+    "name": "llvm.fabs",
+    "arch": "generic",
+    "description": "Floating-point absolute value; used in numeric algorithms, convergence/error checks, distance computations."
+  },
+  {
+    "name": "llvm.floor",
+    "arch": "generic",
+    "description": "Round toward −∞ (largest integer ≤ x); used in indexing, binning, discretization, and math libs."
+  },
+  {
+    "name": "llvm.fma",
+    "arch": "generic",
+    "description": "Fused multiply-add with a single rounding; used in dot products, polynomial evaluation, and BLAS kernels."
+  },
+  {
+    "name": "llvm.fmuladd",
+    "arch": "generic",
+    "description": "Compute x*y+z with permission to fuse (legacy hint for FMA/contraction); used to expose FMA opportunities under fast-math; prefer fma or FMF/contract today."
+  },
+  {
+    "name": "llvm.fptosi.sat",
+    "arch": "generic",
+    "description": "Float-to-signed-int conversion with saturation (clamps out-of-range; NaN→0); used in image/DSP and safe fixed-point conversions without UB."
+  },
+  {
+    "name": "llvm.fptoui.sat",
+    "arch": "generic",
+    "description": "Float-to-unsigned-int conversion with saturation (clamps to [0,max]; NaN→0); used in image/DSP and robust parsing/fixed-point conversion."
+  },
+  {
+    "name": "llvm.fptrunc.round",
+    "arch": "generic",
+    "description": "Narrow FP value with an explicit IEEE-754 rounding mode; used for reproducible rounding, language-defined rounding, and vectorized FP conversions."
+  },
+  {
+    "name": "llvm.frameaddress",
+    "arch": "generic",
+    "description": "Return address of the current/caller’s stack frame (by level); used for stack walking, debugging, low-level runtime tricks; target/ABI-dependent."
+  },
+  {
+    "name": "llvm.frexp",
+    "arch": "generic",
+    "description": "Decompose x into significand and exponent (x = mantissa*2^exp); used in math libraries for range reduction, log/pow, and classification."
+  },
+  {
+    "name": "llvm.fshl",
+    "arch": "generic",
+    "description": "Funnel shift left across two integers (concatenate then left shift/rotate); used in rotates, crypto, hashing, and bit twiddling."
+  },
+  {
+    "name": "llvm.fshr",
+    "arch": "generic",
+    "description": "Funnel shift right across two integers; used in rotates, crypto, hashing, and bit twiddling."
+  },
+  {
+    "name": "llvm.gcread",
+    "arch": "generic",
+    "description": "GC read barrier: model a read of a GC-managed reference with the collector’s required barrier semantics; used by GC-enabled frontends for precise/moving GC."
+  },
+  {
+    "name": "llvm.gcroot",
+    "arch": "generic",
+    "description": "Mark a stack slot as a GC root (shadow stack); used by frontends to make stack references visible to precise collectors."
+  },
+  {
+    "name": "llvm.gcwrite",
+    "arch": "generic",
+    "description": "GC write barrier: model writing a GC-managed reference with required barrier semantics; lowers to card marking/remembered-set updates."
+  },
+  {
+    "name": "llvm.get.active.lane.mask",
+    "arch": "generic",
+    "description": "Create a vector mask marking lanes in a given index range (start..end); used to materialize active-lane masks for scalable vector tails/predication (SVE/RVV)."
+  },
+  {
+    "name": "llvm.get.dynamic.area.offset",
+    "arch": "generic",
+    "description": "Query the target-specific offset to the function’s dynamically sized stack area; used to form addresses into dynamic alloca/outgoing-call areas when offsets aren’t known until codegen."
+  },
+  {
+    "name": "llvm.get.fpenv",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.get.fpenv"
+  },
+  {
+    "name": "llvm.get.fpmode",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.get.fpmode"
+  },
+  {
+    "name": "llvm.get.rounding",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.get.rounding"
+  },
+  {
+    "name": "llvm.hwasan.check.memaccess",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.hwasan.check.memaccess"
+  },
+  {
+    "name": "llvm.hwasan.check.memaccess.fixedshadow",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.hwasan.check.memaccess.fixedshadow"
+  },
+  {
+    "name": "llvm.hwasan.check.memaccess.shortgranules",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.hwasan.check.memaccess.shortgranules"
+  },
+  {
+    "name": "llvm.hwasan.check.memaccess.shortgranules.fixedshadow",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.hwasan.check.memaccess.shortgranules.fixedshadow"
+  },
+  {
+    "name": "llvm.icall.branch.funnel",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.icall.branch.funnel"
+  },
+  {
+    "name": "llvm.init.trampoline",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.init.trampoline"
+  },
+  {
+    "name": "llvm.instrprof.callsite",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.callsite"
+  },
+  {
+    "name": "llvm.instrprof.cover",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.cover"
+  },
+  {
+    "name": "llvm.instrprof.increment",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.increment"
+  },
+  {
+    "name": "llvm.instrprof.increment.step",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.increment.step"
+  },
+  {
+    "name": "llvm.instrprof.mcdc.parameters",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.mcdc.parameters"
+  },
+  {
+    "name": "llvm.instrprof.mcdc.tvbitmap.update",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.mcdc.tvbitmap.update"
+  },
+  {
+    "name": "llvm.instrprof.timestamp",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.timestamp"
+  },
+  {
+    "name": "llvm.instrprof.value.profile",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.instrprof.value.profile"
+  },
+  {
+    "name": "llvm.invariant.end",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.invariant.end"
+  },
+  {
+    "name": "llvm.invariant.start",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.invariant.start"
+  },
+  {
+    "name": "llvm.is.constant",
+    "arch": "generic",
+    "description": "LLVM intrinsic llvm.is.constant"
+  },
+  {
+    "name": "llvm.is.fpclass",
+    "arch": "generic",
+    "description": "Tests whether a floating-point value is in any of the requested IEEE-754 classes (NaN, ±Inf, normal, subnormal, ±0); used to implement isnan/isinf/isfinite/issubnormal and fast FP-class checks via target instructions."
+  },
+  {
+    "name": "llvm.launder.invariant.group",
+    "arch": "generic",
+    "description": "Returns the same address with a fresh invariant-group identity; models object reinitialization (e.g., C++ placement new) so prior invariant loads (like vptr) aren’t reused; helps correct devirtualization and AA."
+  },
+  {
+    "name": "llvm.ldexp",
+    "arch": "generic",
+    "description": "Computes x * 2^exp with exact power-of-two scaling (vectorizable); used for efficient scaling, implementing ldexp/scalbn, and reconstructing values from mantissa/exponent."
+  },
+  {
+    "name": "llvm.lifetime.end",
+    "arch": "generic",
+    "description": "Marks the end of a stack object’s lifetime; enables early stack-slot reuse, dead-store elimination, and better register allocation; useful for alloca’d temporaries and SROA."
+  },
+  {
+    "name": "llvm.lifetime.start",
+    "arch": "generic",
+    "description": "Marks the beginning of a stack object’s lifetime; guides stack coloring and SROA, and can inhibit loads/stores before the object becomes live."
+  },
+  {
+    "name": "llvm.llrint",
+    "arch": "generic",
+    "description": "Rounds to nearest integer under current FP rounding mode and returns long long; may raise inexact/overflow per libm; for strict IEEE/C semantics when converting FP to integer."
+  },
+  {
+    "name": "llvm.llround",
+    "arch": "generic",
+    "description": "Rounds halfway away from zero to long long; no inexact flag, may overflow; used for C llround semantics in FP→integer conversions with specified tie-breaking."
+  },
+  {
+    "name": "llvm.load.relative",
+    "arch": "generic",
+    "description": "Loads via a relative reference: reads a signed addend from a slot, adds it to the slot’s address to form an absolute pointer, and loads the target; used for relative vtables/PIC without GOT (e.g., -frelative-vtables)."
+  },
+  {
+    "name": "llvm.localaddress",
+    "arch": "generic",
+    "description": "Produces an opaque pointer identifying the current function for frame/local recovery; passed to outlined helpers and used with llvm.localrecover (MSVC/WinEH, outlined cleanups/finally)."
+  },
+  {
+    "name": "llvm.localescape",
+    "arch": "generic",
+    "description": "Marks which allocas’ addresses must be recoverable outside the function; used by EH/outlining to export locals for access in helper functions; pairs with llvm.localrecover."
+  },
+  {
+    "name": "llvm.localrecover",
+    "arch": "generic",
+    "description": "In an outlined helper, recovers the address of an escaped alloca from the parent given the parent function id and frame pointer plus index; used in MSVC/WinEH and similar outlining schemes."
+  },
+  {
+    "name": "llvm.log",
+    "arch": "generic",
+    "description": "Natural logarithm; used in scientific/numerical code, normalization, and transforms; lowered to libm or hardware where available and honors fast-math flags."
+  },
+  {
+    "name": "llvm.log10",
+    "arch": "generic",
+    "description": "Base-10 logarithm; used in decibel calculations, human-readable scaling, and scientific formatting; maps to libm/hardware when possible."
+  },
+  {
+    "name": "llvm.log2",
+    "arch": "generic",
+    "description": "Base-2 logarithm; used for exponent extraction, scaling in power-of-two domains, and bit-level algorithms; maps to libm/hardware instructions where available."
+  },
+  {
+    "name": "llvm.loop.decrement",
+    "arch": "generic",
+    "description": "Decrement-and-test for counted loops; used by front ends/passes to form low-overhead hardware loops and lower to “decrement-and-branch-if-not-zero” sequences on supporting targets."
+  },
+  {
+    "name": "llvm.loop.decrement.reg",
+    "arch": "generic",
+    "description": "Register-based variant of the loop decrement-and-test; facilitates lowering to targets with dedicated loop counters or predicated decrement instructions for minimal loop overhead."
+  },
+  {
+    "name": "llvm.lrint",
+    "arch": "generic",
+    "description": "Rounds to nearest integer under current FP rounding mode and returns long; may raise inexact/overflow per libm; for strict IEEE/C lrint semantics."
+  },
+  {
+    "name": "llvm.lround",
+    "arch": "generic",
+    "description": "Rounds halfway away from zero to long; no inexact flag, may overflow; used for C lround semantics in FP→integer conversions."
+  },
+  {
+    "name": "llvm.masked.compressstore",
+    "arch": "generic",
+    "description": "Stores only lanes where the mask is true, packed contiguously in memory (compacts active elements); used in vectorized filtering/packing, lowers to AVX-512/SVE compress-store."
+  },
+  {
+    "name": "llvm.masked.expandload",
+    "arch": "generic",
+    "description": "Loads elements from memory and places them into lanes selected by a mask, expanding into sparse positions (inverse of compress); used in predicated vector loops, lowers to AVX-512/SVE expand-load."
+  },
+  {
+    "name": "llvm.masked.gather",
+    "arch": "generic",
+    "description": "Loads selected elements from computed addresses under a mask (others pass through); used in vectorizing irregular indirections (sparse lookups, table reads) and safe tail handling."
+  },
+  {
+    "name": "llvm.masked.load",
+    "arch": "generic",
+    "description": "Loads a vector with per-lane masking (inactive lanes pass through a value); used for predicated/tail loads in SIMD loops."
+  },
+  {
+    "name": "llvm.masked.scatter",
+    "arch": "generic",
+    "description": "Stores selected vector elements to computed addresses under a mask; used in vectorizing indirect writes and sparse updates."
+  },
+  {
+    "name": "llvm.masked.store",
+    "arch": "generic",
+    "description": "Stores a vector with per-lane masking; used for predicated/tail stores in SIMD loops."
+  },
+  {
+    "name": "llvm.matrix.column.major.load",
+    "arch": "generic",
+    "description": "Loads an M×N matrix from column-major memory with a stride into a matrix value; used to feed LLVM matrix ops and target HW matrix units."
+  },
+  {
+    "name": "llvm.matrix.column.major.store",
+    "arch": "generic",
+    "description": "Stores an M×N matrix value to memory in column-major layout with a stride; used after matrix ops for efficient layout handling."
+  },
+  {
+    "name": "llvm.matrix.multiply",
+    "arch": "generic",
+    "description": "Matrix multiply of M×K and K×N matrix values; used in linear algebra kernels and to lower to hardware MMA/GEMM instructions."
+  },
+  {
+    "name": "llvm.matrix.transpose",
+    "arch": "generic",
+    "description": "Transposes a matrix value; used to match operand layout, improve locality, or implement algorithms needing transposed inputs."
+  },
+  {
+    "name": "llvm.maximum",
+    "arch": "generic",
+    "description": "IEEE-754 maximum: returns the larger operand, propagates NaNs, +0 preferred over −0; used when strict NaN semantics are required."
+  },
+  {
+    "name": "llvm.maxnum",
+    "arch": "generic",
+    "description": "Numeric maximum (like fmax): returns the non-NaN if one is NaN (NaN only if both are NaN), +0 over −0; used in math code tolerant of NaNs."
+  },
+  {
+    "name": "llvm.memcpy",
+    "arch": "generic",
+    "description": "Copies a non-overlapping memory block from src to dst; lowered to optimal loops or libcalls; used for struct/array copies."
+  },
+  {
+    "name": "llvm.memcpy.element.unordered.atomic",
+    "arch": "generic",
+    "description": "memcpy done via element-sized unordered atomic accesses to prevent tearing; used in concurrent/lock-free code needing atomicity without ordering."
+  },
+  {
+    "name": "llvm.memcpy.inline",
+    "arch": "generic",
+    "description": "Inlined memcpy for known small constant sizes (no libcall); used to emit straight-line copy sequences."
+  },
+  {
+    "name": "llvm.memmove",
+    "arch": "generic",
+    "description": "Copies a memory block allowing overlap; lowered to memmove/libcall or directional loops; used when src/dst may alias."
+  },
+  {
+    "name": "llvm.memmove.element.unordered.atomic",
+    "arch": "generic",
+    "description": "Memmove via element-sized unordered atomic accesses; used for overlapping copies that also require non-tearing atomic transfers."
+  },
+  {
+    "name": "llvm.memset",
+    "arch": "generic",
+    "description": "Fills a memory block with a byte value; lowered to memset/libcall or store loops; used for initialization/zeroing."
+  },
+  {
+    "name": "llvm.memset.element.unordered.atomic",
+    "arch": "generic",
+    "description": "Memset via element-sized unordered atomic stores to avoid tearing; used to initialize shared data atomically without ordering."
+  },
+  {
+    "name": "llvm.memset.inline",
+    "arch": "generic",
+    "description": "Inlined memset for known small constant sizes (no libcall); used to generate straight-line store sequences."
+  },
+  {
+    "name": "llvm.minimum",
+    "arch": "generic",
+    "description": "IEEE-754 minimum: returns the smaller operand, propagates NaNs, −0 preferred over +0; used when strict NaN semantics are required."
+  },
+  {
+    "name": "llvm.minnum",
+    "arch": "generic",
+    "description": "Numeric minimum (like fmin): returns the non-NaN if one is NaN (NaN only if both are NaN), −0 over +0; used in math code tolerant of NaNs."
+  },
+  {
+    "name": "llvm.nearbyint",
+    "arch": "generic",
+    "description": "Rounds a floating-point value to an integral value using the current FP rounding mode without raising inexact; used in numeric kernels that must respect rounding modes."
+  },
+  {
+    "name": "llvm.objc.arc.annotation.bottomup.bbend",
+    "arch": "generic",
+    "description": "No-op marker for end of a basic block in ARC bottom-up dataflow; used by the ObjC ARC optimizer to bound retain/release motion."
+  },
+  {
+    "name": "llvm.objc.arc.annotation.bottomup.bbstart",
+    "arch": "generic",
+    "description": "No-op marker for start of a basic block in ARC bottom-up dataflow; used by the ObjC ARC optimizer to bound retain/release motion."
+  },
+  {
+    "name": "llvm.objc.arc.annotation.topdown.bbend",
+    "arch": "generic",
+    "description": "No-op marker for end of a basic block in ARC top-down dataflow; used by the ObjC ARC optimizer to bound retain/release motion."
+  },
+  {
+    "name": "llvm.objc.arc.annotation.topdown.bbstart",
+    "arch": "generic",
+    "description": "No-op marker for start of a basic block in ARC top-down dataflow; used by the ObjC ARC optimizer to bound retain/release motion."
+  },
+  {
+    "name": "llvm.objc.autorelease",
+    "arch": "generic",
+    "description": "Adds an object to the current autorelease pool and returns it; used to hand out +0 objects or balance retains under ARC/MRR."
+  },
+  {
+    "name": "llvm.objc.autoreleasePoolPop",
+    "arch": "generic",
+    "description": "Pops (drains) an autorelease pool created by Push given its token; used to end @autoreleasepool scopes and control temporary object lifetimes."
+  },
+  {
+    "name": "llvm.objc.autoreleasePoolPush",
+    "arch": "generic",
+    "description": "Pushes a new autorelease pool and returns a pool token; used to start @autoreleasepool scopes, often around tight loops."
+  },
+  {
+    "name": "llvm.objc.autoreleaseReturnValue",
+    "arch": "generic",
+    "description": "Specialized autorelease for function return values enabling the caller’s retainAutoreleasedReturnValue fast path; used to optimize object-returning functions under ARC."
+  },
+  {
+    "name": "llvm.objc.clang.arc.noop.use",
+    "arch": "generic",
+    "description": "Front-end no-op use to keep a value “alive” for optimization/lifetime purposes without ARC semantics; used to prevent DCE without affecting ARC analysis."
+  },
+  {
+    "name": "llvm.objc.clang.arc.use",
+    "arch": "generic",
+    "description": "ARC-visible use that extends the lifetime of an object and constrains refcount motion; used around bridging/consumed uses to inform ARC optimizer."
+  },
+  {
+    "name": "llvm.objc.copyWeak",
+    "arch": "generic",
+    "description": "Copies a __weak reference to another weak slot with proper registration; used when assigning between weak variables."
+  },
+  {
+    "name": "llvm.objc.destroyWeak",
+    "arch": "generic",
+    "description": "Clears and deregisters a __weak reference slot; used at end of a weak variable’s lifetime or before overwriting it."
+  },
+  {
+    "name": "llvm.objc.initWeak",
+    "arch": "generic",
+    "description": "Initializes a __weak reference slot with an object, registering it for zeroing; used when creating weak variables."
+  },
+  {
+    "name": "llvm.objc.loadWeak",
+    "arch": "generic",
+    "description": "Loads the current value of a __weak reference at +0 (unretained); used for ephemeral uses where the value isn’t kept beyond the immediate operation."
+  },
+  {
+    "name": "llvm.objc.loadWeakRetained",
+    "arch": "generic",
+    "description": "Atomically loads a __weak reference and retains it (+1); used when promoting a weak value to a strong one or when it must stay alive."
+  },
+  {
+    "name": "llvm.objc.moveWeak",
+    "arch": "generic",
+    "description": "Moves a __weak reference from one slot to another, clearing the source; used in assignments/moves where the source should be nulled."
+  },
+  {
+    "name": "llvm.objc.release",
+    "arch": "generic",
+    "description": "Decrements an object’s retain count (release message); used to balance retains and manage +1 ownership under ARC/MRR."
+  },
+  {
+    "name": "llvm.objc.retain",
+    "arch": "generic",
+    "description": "Increments an object’s retain count and returns it; used to acquire +1 ownership or extend lifetimes."
+  },
+  {
+    "name": "llvm.objc.retain.autorelease",
+    "arch": "generic",
+    "description": "Retains then autoreleases an object and returns it (+0 overall); used to hand out autoreleased values or convert +1 to +0."
+  },
+  {
+    "name": "llvm.objc.retainAutorelease",
+    "arch": "generic",
+    "description": "Retain then autorelease an Objective‑C object in one step; used under ARC/MRR around call boundaries to balance temporary ownership with fewer runtime calls."
+  },
+  {
+    "name": "llvm.objc.retainAutoreleaseReturnValue",
+    "arch": "generic",
+    "description": "Retain+autorelease a function’s return object in the callee; participates in the optimized return‑value handoff with callers to reduce retain/release traffic."
+  },
+  {
+    "name": "llvm.objc.retainAutoreleasedReturnValue",
+    "arch": "generic",
+    "description": "Specialized retain of a just‑returned autoreleased object in the caller; claims the optimized return value to avoid extra retains/releases."
+  },
+  {
+    "name": "llvm.objc.retainBlock",
+    "arch": "generic",
+    "description": "Retain (and copy to heap if needed) an Objective‑C block; used when storing/passing blocks beyond their stack lifetime."
+  },
+  {
+    "name": "llvm.objc.retainedObject",
+    "arch": "generic",
+    "description": "Convert a +1 retained void*/CF pointer into an ObjC object with ownership transfer; used to implement __bridge_transfer and CFCreate→ARC handoff."
+  },
+  {
+    "name": "llvm.objc.storeStrong",
+    "arch": "generic",
+    "description": "Store to a __strong reference with correct retain/release ordering and barriers; used for strong variable/property assignments (lowers to objc_storeStrong)."
+  },
+  {
+    "name": "llvm.objc.storeWeak",
+    "arch": "generic",
+    "description": "Store to a __weak reference with zeroing‑weak semantics; used for weak variable/property assignments (lowers to objc_storeWeak)."
+  },
+  {
+    "name": "llvm.objc.sync.enter",
+    "arch": "generic",
+    "description": "Enter an @synchronized block by acquiring the ObjC monitor lock on an object; ensures mutual exclusion."
+  },
+  {
+    "name": "llvm.objc.sync.exit",
+    "arch": "generic",
+    "description": "Exit an @synchronized block by releasing the ObjC monitor lock; used on normal and exceptional exits."
+  },
+  {
+    "name": "llvm.objc.unretainedObject",
+    "arch": "generic",
+    "description": "Convert a void*/CF pointer to an ObjC object without changing ownership; used to implement __bridge (no transfer)."
+  },
+  {
+    "name": "llvm.objc.unretainedPointer",
+    "arch": "generic",
+    "description": "Convert an ObjC object to a void*/CF pointer without changing ownership; used for __bridge casts."
+  },
+  {
+    "name": "llvm.objc.unsafeClaimAutoreleasedReturnValue",
+    "arch": "generic",
+    "description": "Claim an autoreleased return value without an extra retain via runtime handoff; used immediately after calls returning autoreleased objects to elide retain/release."
+  },
+  {
+    "name": "llvm.objectsize",
+    "arch": "generic",
+    "description": "Estimate the size of the object a pointer can refer to (upper/lower bound); used by __builtin_object_size, fortify checks, and size‑based optimizations."
+  },
+  {
+    "name": "llvm.pcmarker",
+    "arch": "generic",
+    "description": "Insert a target‑specific program‑counter marker for performance tools; used to annotate code regions for profilers/sampling and tracing."
+  },
+  {
+    "name": "llvm.pow",
+    "arch": "generic",
+    "description": "Floating‑point power x^y; used in numerical code, lowered to libm or expanded with fast‑math optimizations."
+  },
+  {
+    "name": "llvm.powi",
+    "arch": "generic",
+    "description": "Floating‑point power with integer exponent x^n; enables faster expansions (e.g., repeated multiplies) and constant folding in numeric kernels."
+  },
+  {
+    "name": "llvm.prefetch",
+    "arch": "generic",
+    "description": "Hint to prefetch a memory address (read/write, locality, cache level); used to hide memory latency in hot loops and streaming workloads."
+  },
+  {
+    "name": "llvm.preserve.array.access.index",
+    "arch": "generic",
+    "description": "Preserve the high‑level array subscript for a pointer computation; used by __builtin_preserve_access_index (e.g., BPF CO‑RE, hardening) so later tools can reconstruct element access."
+  },
+  {
+    "name": "llvm.preserve.static.offset",
+    "arch": "generic",
+    "description": "Preserve a known static byte offset from a base object; used with __builtin_preserve_access_index to recover exact offsets after optimization."
+  },
+  {
+    "name": "llvm.preserve.struct.access.index",
+    "arch": "generic",
+    "description": "Preserve the high‑level struct field index path for a pointer computation; used by __builtin_preserve_access_index (notably BPF CO‑RE) to enable field‑offset relocation."
+  },
+  {
+    "name": "llvm.preserve.union.access.index",
+    "arch": "generic",
+    "description": "Non-semantic marker recording which union member is accessed; preserves alias/type info for optimizations and sanitizers across IR transformations."
+  },
+  {
+    "name": "llvm.pseudoprobe",
+    "arch": "generic",
+    "description": "Inserts a pseudo profiling probe (no direct code until lowering); used for sample-based PGO/AutoFDO and code layout with inline-context awareness."
+  },
+  {
+    "name": "llvm.ptr.annotation",
+    "arch": "generic",
+    "description": "Attaches a source-level annotation to a pointer and returns it; carries __attribute__((annotate)) strings for tools/analyses and optimization hints."
+  },
+  {
+    "name": "llvm.ptrauth.auth",
+    "arch": "generic",
+    "description": "Authenticates a pointer with a key/discriminator and returns the authenticated (stripped) pointer; used before dereferencing/calling PAC-signed pointers on AArch64."
+  },
+  {
+    "name": "llvm.ptrauth.blend",
+    "arch": "generic",
+    "description": "Blends a small integer (e.g., address) with a 32-bit value to derive a diversified discriminator; used to vary pointer-auth signatures per use-site."
+  },
+  {
+    "name": "llvm.ptrauth.resign",
+    "arch": "generic",
+    "description": "Re-signs a pointer by authenticating with old key/discriminator then signing with a new pair; used when casting or moving pointers across protection domains."
+  },
+  {
+    "name": "llvm.ptrauth.sign",
+    "arch": "generic",
+    "description": "Signs a pointer with a key and discriminator to add a PAC; used when storing/transporting pointers to protect against corruption."
+  },
+  {
+    "name": "llvm.ptrauth.sign.generic",
+    "arch": "generic",
+    "description": "Signs a non-pointer 64-bit value with a key and discriminator; used to authenticate data or create PAC-like tags for non-pointer payloads."
+  },
+  {
+    "name": "llvm.ptrauth.strip",
+    "arch": "generic",
+    "description": "Strips the authentication code from a pointer without verification; used for logging/comparison or when authentication isn’t required."
+  },
+  {
+    "name": "llvm.ptrmask",
+    "arch": "generic",
+    "description": "Applies a mask to a pointer (ptr & mask); used to clear tag bits (e.g., AArch64 TBI/MTE) or enforce alignment by zeroing low bits."
+  },
+  {
+    "name": "llvm.public.type.test",
+    "arch": "generic",
+    "description": "Type-based CFI/WPD test against a public type-id set; used to guard indirect calls/vtable uses and enable jump-table lowering across DSOs/LTO."
+  },
+  {
+    "name": "llvm.read_register",
+    "arch": "generic",
+    "description": "Reads an architectural register named by a constant string; may be optimized/reordered; used to access special regs (e.g., thread pointer)."
+  },
+  {
+    "name": "llvm.read_volatile_register",
+    "arch": "generic",
+    "description": "Volatile read of an architectural register; not eliminated or reordered; used for device/system registers where every read must occur."
+  },
+  {
+    "name": "llvm.readcyclecounter",
+    "arch": "generic",
+    "description": "Reads a high-resolution cycle counter (may be frequency-dependent); used for low-level timing and profiling."
+  },
+  {
+    "name": "llvm.readsteadycounter",
+    "arch": "generic",
+    "description": "Reads a monotonic, frequency-invariant counter if available; used for elapsed-time measurements unaffected by CPU frequency scaling."
+  },
+  {
+    "name": "llvm.reset.fpenv",
+    "arch": "generic",
+    "description": "Resets the floating-point environment/exception state to default and clears accrued flags; used around regions with FENV access or strict FP."
+  },
+  {
+    "name": "llvm.reset.fpmode",
+    "arch": "generic",
+    "description": "Resets the current floating-point mode (e.g., rounding, exception behavior) to default; used when leaving scoped non-default FP modes."
+  },
+  {
+    "name": "llvm.returnaddress",
+    "arch": "generic",
+    "description": "Returns the return address of the current or a caller frame; used for backtraces, logging, and sanitizer instrumentation (nonportable, limited)."
+  },
+  {
+    "name": "llvm.rint",
+    "arch": "generic",
+    "description": "Rounds to an integral value using the current FP rounding mode, raising inexact as appropriate; implements C rint()."
+  },
+  {
+    "name": "llvm.round",
+    "arch": "generic",
+    "description": "Rounds to nearest integer with halfway cases away from zero; implements C round(), returning a floating-point integral value."
+  },
+  {
+    "name": "llvm.roundeven",
+    "arch": "generic",
+    "description": "Rounds a floating-point value to the nearest integer with ties to even; useful when a fixed, deterministic IEEE “banker’s rounding” is required independent of the current FP mode (e.g., financial/math kernels, reproducible numerics)."
+  },
+  {
+    "name": "llvm.sadd.sat",
+    "arch": "generic",
+    "description": "Signed saturating addition; on overflow clamps to INT_MIN/INT_MAX instead of wrapping; common in DSP, image/audio processing, and fixed-point arithmetic."
+  },
+  {
+    "name": "llvm.sadd.with.overflow",
+    "arch": "generic",
+    "description": "Signed add that returns {sum, overflow-flag}; used for checked arithmetic, bounds checking, big-integer libraries, and sanitizers."
+  },
+  {
+    "name": "llvm.scmp",
+    "arch": "generic",
+    "description": "Signed three-way compare that yields -1, 0, or 1; used to implement total ordering (e.g., C++20 <=>) efficiently and without overflow pitfalls."
+  },
+  {
+    "name": "llvm.sdiv.fix",
+    "arch": "generic",
+    "description": "Signed fixed-point division with a built-in scale (fractional bits) immediate; used in embedded/DSP code to model fixed-point divide precisely."
+  },
+  {
+    "name": "llvm.sdiv.fix.sat",
+    "arch": "generic",
+    "description": "Signed fixed-point division with scaling that saturates on overflow; used where fixed-point divide must not wrap (DSP, control systems)."
+  },
+  {
+    "name": "llvm.seh.scope.begin",
+    "arch": "generic",
+    "description": "Marks the start of a Windows SEH scope; a codegen marker used by MSVC-style __try/__except/__finally lowering for correct unwind tables."
+  },
+  {
+    "name": "llvm.seh.scope.end",
+    "arch": "generic",
+    "description": "Marks the end of a Windows SEH scope; pairs with seh.scope.begin to delineate SEH regions for Windows exception handling metadata."
+  },
+  {
+    "name": "llvm.seh.try.begin",
+    "arch": "generic",
+    "description": "Marks the start of a Windows SEH try region; used to model __try blocks so the backend can emit proper EH/unwind info."
+  },
+  {
+    "name": "llvm.seh.try.end",
+    "arch": "generic",
+    "description": "Marks the end of a Windows SEH try region; paired with seh.try.begin for MSVC SEH lowering."
+  },
+  {
+    "name": "llvm.set.fpenv",
+    "arch": "generic",
+    "description": "Sets the active floating-point environment (rounding/exceptions/denormals) state token for constrained FP ops; used to implement C fenv.h (fe{set,update}env) and strict FP pragmas."
+  },
+  {
+    "name": "llvm.set.fpmode",
+    "arch": "generic",
+    "description": "Sets the current floating-point mode (e.g., exception behavior, denormal handling) guiding constrained FP intrinsics; used by frontends honoring strict/fast FP controls and pragmas."
+  },
+  {
+    "name": "llvm.set.loop.iterations",
+    "arch": "generic",
+    "description": "Provides a loop’s trip count to the backend for hardware loop lowering; used on targets like ARM to materialize low-overhead/hardware loops."
+  },
+  {
+    "name": "llvm.set.rounding",
+    "arch": "generic",
+    "description": "Sets the dynamic floating-point rounding mode; used to implement fesetround, #pragma STDC FENV_ROUND, and numerics code needing mode changes."
+  },
+  {
+    "name": "llvm.sideeffect",
+    "arch": "generic",
+    "description": "Opaque side-effect barrier with no operands; prevents code motion and DCE around it; used to model unknown effects (e.g., inline asm sideeffect), testing, or timing fences."
+  },
+  {
+    "name": "llvm.sin",
+    "arch": "generic",
+    "description": "Computes the sine of a floating-point value; maps to libm or hardware instructions; used in signal processing, graphics, and scientific code."
+  },
+  {
+    "name": "llvm.sinh",
+    "arch": "generic",
+    "description": "Computes the hyperbolic sine; used in scientific/numerical applications and special functions."
+  },
+  {
+    "name": "llvm.smax",
+    "arch": "generic",
+    "description": "Element-wise signed maximum; used for clamp operations, min/max chains, and to leverage ISA smax instructions in vectorized code."
+  },
+  {
+    "name": "llvm.smin",
+    "arch": "generic",
+    "description": "Element-wise signed minimum; used for clamp operations, min/max chains, and lowering to ISA smin instructions."
+  },
+  {
+    "name": "llvm.smul.fix",
+    "arch": "generic",
+    "description": "Signed fixed-point multiply with a built-in scale (fractional bits) immediate; used in DSP/embedded kernels to model precise fixed-point multiply."
+  },
+  {
+    "name": "llvm.smul.fix.sat",
+    "arch": "generic",
+    "description": "Signed fixed-point multiply with scaling and saturation; used in DSP, audio/image processing, and embedded fixed-point math."
+  },
+  {
+    "name": "llvm.smul.with.overflow",
+    "arch": "generic",
+    "description": "Signed integer multiply returning {result, overflow flag}; used for checked arithmetic, safe-int libraries, and compiler overflow checks."
+  },
+  {
+    "name": "llvm.sponentry",
+    "arch": "generic",
+    "description": "Returns the stack pointer as it was on function entry; used for stack-clash probing, VLAs/alloca deallocation, and stack-usage checks."
+  },
+  {
+    "name": "llvm.sqrt",
+    "arch": "generic",
+    "description": "Floating-point square root; uses hardware sqrt or libm; common in numerics, graphics, and scientific code."
+  },
+  {
+    "name": "llvm.ssa.copy",
+    "arch": "generic",
+    "description": "No-op value copy preserving SSA identity; used to constrain codegen (e.g., keep copies for register allocation/O0) without changing semantics."
+  },
+  {
+    "name": "llvm.sshl.sat",
+    "arch": "generic",
+    "description": "Signed left shift with saturation on overflow; used in fixed-point/DSP code to clamp results instead of invoking UB."
+  },
+  {
+    "name": "llvm.ssub.sat",
+    "arch": "generic",
+    "description": "Signed saturating subtraction; clamps to min/max on overflow; used in DSP, image/audio processing, and saturating arithmetic."
+  },
+  {
+    "name": "llvm.ssub.with.overflow",
+    "arch": "generic",
+    "description": "Signed subtraction returning {result, overflow flag}; used for checked arithmetic and bounds/index calculations."
+  },
+  {
+    "name": "llvm.stackguard",
+    "arch": "generic",
+    "description": "Materializes the platform’s stack-canary guard (value/pointer); used by stack protector prologues."
+  },
+  {
+    "name": "llvm.stackprotector",
+    "arch": "generic",
+    "description": "Marks points to set/check a stack canary; lowered to prologue/epilogue code for -fstack-protector."
+  },
+  {
+    "name": "llvm.stackrestore",
+    "arch": "generic",
+    "description": "Restores the stack pointer to a token from llvm.stacksave; used to free dynamic stack allocations/temps."
+  },
+  {
+    "name": "llvm.stacksave",
+    "arch": "generic",
+    "description": "Captures the current stack pointer as an opaque token; paired with llvm.stackrestore around dynamic allocas."
+  },
+  {
+    "name": "llvm.start.loop.iterations",
+    "arch": "generic",
+    "description": "Initialize hardware loop trip count and indicate if nonzero; used to form low-overhead hardware loops (e.g., ARM/Hexagon)."
+  },
+  {
+    "name": "llvm.strip.invariant.group",
+    "arch": "generic",
+    "description": "Removes invariant.group from a pointer, returning the underlying pointer; used before pointer escapes/casts to avoid over-optimistic aliasing."
+  },
+  {
+    "name": "llvm.swift.async.context.addr",
+    "arch": "generic",
+    "description": "Returns the address of the current Swift async context; used by the Swift compiler/runtime to implement async/await."
+  },
+  {
+    "name": "llvm.tan",
+    "arch": "generic",
+    "description": "Floating-point tangent; lowered to hardware or libm; used in trigonometric computations."
+  },
+  {
+    "name": "llvm.tanh",
+    "arch": "generic",
+    "description": "Floating-point hyperbolic tangent; used in numerics and ML activation functions."
+  },
+  {
+    "name": "llvm.test.set.loop.iterations",
+    "arch": "generic",
+    "description": "Pseudo to set and test hardware loop iterations in one step; used by backends when forming low-overhead loops."
+  },
+  {
+    "name": "llvm.test.start.loop.iterations",
+    "arch": "generic",
+    "description": "Pseudo to start and test a hardware loop counter; used during codegen/legalization of low-overhead loops."
+  },
+  {
+    "name": "llvm.thread.pointer",
+    "arch": "generic",
+    "description": "Returns the current thread-pointer register value; used for fast TLS access and language runtime internals."
+  },
+  {
+    "name": "llvm.threadlocal.address",
+    "arch": "generic",
+    "description": "Computes the per‑thread address of a thread‑local object; used to access C/C++ thread_local/__thread variables on targets with special TLS models."
+  },
+  {
+    "name": "llvm.trap",
+    "arch": "generic",
+    "description": "Causes an immediate trap/abort; used for unreachable code, assert/abort paths, and sanitizer fast‑fail."
+  },
+  {
+    "name": "llvm.trunc",
+    "arch": "generic",
+    "description": "Floating‑point truncate toward zero (remove fractional part); used to implement C/C++/libm trunc and fast rounding."
+  },
+  {
+    "name": "llvm.type.checked.load",
+    "arch": "generic",
+    "description": "Loads a pointer and checks it against type metadata, returning (ptr, success); used by CFI and whole‑program devirtualization of virtual calls."
+  },
+  {
+    "name": "llvm.type.checked.load.relative",
+    "arch": "generic",
+    "description": "Like type.checked.load but for relative (e.g., PC‑relative) pointer encodings; used with relative vtables and CFI/devirt."
+  },
+  {
+    "name": "llvm.type.test",
+    "arch": "generic",
+    "description": "Tests whether a pointer refers to an object with given type metadata; used for CFI, vcall guards, and WPD devirtualization."
+  },
+  {
+    "name": "llvm.uadd.sat",
+    "arch": "generic",
+    "description": "Unsigned saturating add (clamps at max on overflow); used in image/DSP code and SIMD‑friendly arithmetic."
+  },
+  {
+    "name": "llvm.uadd.with.overflow",
+    "arch": "generic",
+    "description": "Unsigned add returning both sum and overflow flag; used for checked math, big integers, and bounds calculations."
+  },
+  {
+    "name": "llvm.ubsantrap",
+    "arch": "generic",
+    "description": "UBSan trap with a code; used to terminate immediately on undefined behavior with minimal runtime."
+  },
+  {
+    "name": "llvm.ucmp",
+    "arch": "generic",
+    "description": "Unsigned integer comparison producing a boolean result; typically maps to icmp ult/ugt/etc. and used by some builtins/combines."
+  },
+  {
+    "name": "llvm.udiv.fix",
+    "arch": "generic",
+    "description": "Unsigned fixed‑point division with a specified fractional scale; used for C fixed‑point types (_Accum/_Fract) and Q‑format math."
+  },
+  {
+    "name": "llvm.udiv.fix.sat",
+    "arch": "generic",
+    "description": "Unsigned fixed‑point division with saturation on overflow; used when fixed‑point division must clamp results."
+  },
+  {
+    "name": "llvm.umax",
+    "arch": "generic",
+    "description": "Unsigned maximum of two integers; used for bounds clamping and branchless min/max."
+  },
+  {
+    "name": "llvm.umin",
+    "arch": "generic",
+    "description": "Unsigned minimum of two integers; used for bounds clamping and branchless min/max."
+  },
+  {
+    "name": "llvm.umul.fix",
+    "arch": "generic",
+    "description": "Unsigned fixed‑point multiply with a specified fractional scale; used for _Accum/_Fract arithmetic and Q‑format DSP."
+  },
+  {
+    "name": "llvm.umul.fix.sat",
+    "arch": "generic",
+    "description": "Unsigned fixed‑point multiply with saturation on overflow; used in robust fixed‑point DSP/image pipelines."
+  },
+  {
+    "name": "llvm.umul.with.overflow",
+    "arch": "generic",
+    "description": "Unsigned multiply returning product and overflow flag; used for checked math, big integers, and capacity checks."
+  },
+  {
+    "name": "llvm.ushl.sat",
+    "arch": "generic",
+    "description": "Unsigned saturating left shift (clamps instead of overflowing); used for fixed‑point scaling and packing."
+  },
+  {
+    "name": "llvm.usub.sat",
+    "arch": "generic",
+    "description": "Unsigned saturating subtract (floors at 0); used in image/DSP code and clamping arithmetic."
+  },
+  {
+    "name": "llvm.usub.with.overflow",
+    "arch": "generic",
+    "description": "Unsigned subtract returning difference and overflow/borrow flag; used for checked arithmetic and range validation."
+  },
+  {
+    "name": "llvm.va_copy",
+    "arch": "generic",
+    "description": "Copy an existing va_list; used to duplicate iteration state over C/C++ variadic arguments when you need to traverse args multiple times."
+  },
+  {
+    "name": "llvm.va_end",
+    "arch": "generic",
+    "description": "Finalize/cleanup a va_list; used at the end of processing variadic arguments to satisfy ABI requirements."
+  },
+  {
+    "name": "llvm.va_start",
+    "arch": "generic",
+    "description": "Initialize a va_list for a variadic function; used to begin accessing ... arguments in C/C++."
+  },
+  {
+    "name": "llvm.var.annotation",
+    "arch": "generic",
+    "description": "Attach a string annotation to a local (stack) variable; used by frontends for __attribute__((annotate)), and by tools/analyses/sanitizers to tag variables."
+  },
+  {
+    "name": "llvm.vector.deinterleave2",
+    "arch": "generic",
+    "description": "Split an interleaved vector [a0,b0,a1,b1,…] into two vectors of evens/odds; used to undo AoS loads, match NEON unzip/ARM SVE unzips/x86 unpack patterns in vectorized loops."
+  },
+  {
+    "name": "llvm.vector.extract",
+    "arch": "generic",
+    "description": "Extract a contiguous subvector starting at a given lane index; used to take low/high halves or sliding windows, mapping to SVE ext/slide, AVX vextract, and shuffle sequences."
+  },
+  {
+    "name": "llvm.vector.insert",
+    "arch": "generic",
+    "description": "Insert a subvector into a destination vector at a given lane index; used to build/concatenate vectors or splice pieces, mapping to AVX vinsert, SVE splice, and shuffles."
+  },
+  {
+    "name": "llvm.vector.interleave2",
+    "arch": "generic",
+    "description": "Interleave two vectors element-wise into one [a0,b0,a1,b1,…]; used to prepare interleaved stores/loads, AoS formation, and to match zip/pack instructions."
+  },
+  {
+    "name": "llvm.vector.reduce.add",
+    "arch": "generic",
+    "description": "Horizontal sum of integer lanes to a scalar; used for reductions in vectorized loops (e.g., sums, dot products)."
+  },
+  {
+    "name": "llvm.vector.reduce.and",
+    "arch": "generic",
+    "description": "Bitwise AND across lanes to a scalar; used to check “all-true” masks or combine per-lane flags."
+  },
+  {
+    "name": "llvm.vector.reduce.fadd",
+    "arch": "generic",
+    "description": "Horizontal sum of floating-point lanes to a scalar; used for numeric reductions in vectorized code (honors FP semantics/fast-math as applicable)."
+  },
+  {
+    "name": "llvm.vector.reduce.fmax",
+    "arch": "generic",
+    "description": "Floating-point maximum across lanes with “num” semantics (choose the numeric operand if one is NaN); used for max reductions that ignore NaNs, matching libm fmax behavior."
+  },
+  {
+    "name": "llvm.vector.reduce.fmaximum",
+    "arch": "generic",
+    "description": "Floating-point maximum across lanes with NaN-propagating semantics (result is NaN if any lane is NaN); used when strict IEEE-754 maximum is required."
+  },
+  {
+    "name": "llvm.vector.reduce.fmin",
+    "arch": "generic",
+    "description": "Floating-point minimum across lanes with “num” semantics (choose the numeric operand if one is NaN); used for min reductions that ignore NaNs, matching libm fmin."
+  },
+  {
+    "name": "llvm.vector.reduce.fminimum",
+    "arch": "generic",
+    "description": "Floating-point minimum across lanes with NaN-propagating semantics; used for strict IEEE-754 minimum reductions."
+  },
+  {
+    "name": "llvm.vector.reduce.fmul",
+    "arch": "generic",
+    "description": "Horizontal product of floating-point lanes to a scalar; used in specialized numeric kernels needing multiplicative reductions."
+  },
+  {
+    "name": "llvm.vector.reduce.mul",
+    "arch": "generic",
+    "description": "Horizontal product of integer lanes to a scalar; used in specialized math, hashing, or probabilistic computations."
+  },
+  {
+    "name": "llvm.vector.reduce.or",
+    "arch": "generic",
+    "description": "Bitwise OR across lanes to a scalar; used to test “any-true” conditions or accumulate feature flags."
+  },
+  {
+    "name": "llvm.vector.reduce.smax",
+    "arch": "generic",
+    "description": "Signed integer maximum across lanes to a scalar; used to find the largest signed value in vectorized scans."
+  },
+  {
+    "name": "llvm.vector.reduce.smin",
+    "arch": "generic",
+    "description": "Signed integer minimum across lanes to a scalar; used to find the smallest signed value in vectorized scans."
+  },
+  {
+    "name": "llvm.vector.reduce.umax",
+    "arch": "generic",
+    "description": "Reduces a vector to its unsigned maximum element; useful for min/max scans in SIMD loops (e.g., clamps, image/video)."
+  },
+  {
+    "name": "llvm.vector.reduce.umin",
+    "arch": "generic",
+    "description": "Reduces a vector to its unsigned minimum element; useful for min/max scans, histograms, and thresholding."
+  },
+  {
+    "name": "llvm.vector.reduce.xor",
+    "arch": "generic",
+    "description": "XOR-reduces all elements to a single value; useful for parity checks, simple checksums, and hash folding."
+  },
+  {
+    "name": "llvm.vector.reverse",
+    "arch": "generic",
+    "description": "Reverses lane order in a vector; useful for sequence reversal, permutation stages, and bitonic/sort kernels."
+  },
+  {
+    "name": "llvm.vector.splice",
+    "arch": "generic",
+    "description": "Forms a vector by extracting a contiguous slice from the logical concatenation of two vectors at an immediate index; useful for sliding-window/shift-with-insert in SVE/RVV, stencils, and FIR filters."
+  },
+  {
+    "name": "llvm.vp.abs",
+    "arch": "generic",
+    "description": "Predicated per-lane integer absolute value with mask/EVL; useful in VLA SIMD loops for |x| under masks and tail handling."
+  },
+  {
+    "name": "llvm.vp.add",
+    "arch": "generic",
+    "description": "Predicated per-lane integer addition with mask/EVL; useful for masked vector loops, sparse updates, and tail-aware accumulations."
+  },
+  {
+    "name": "llvm.vp.and",
+    "arch": "generic",
+    "description": "Predicated per-lane bitwise AND with mask/EVL; useful for masked bit filtering and flag manipulation."
+  },
+  {
+    "name": "llvm.vp.ashr",
+    "arch": "generic",
+    "description": "Predicated per-lane arithmetic right shift with mask/EVL; useful in fixed-point math and sign-preserving scaling."
+  },
+  {
+    "name": "llvm.vp.bitreverse",
+    "arch": "generic",
+    "description": "Predicated per-lane bit-order reversal with mask/EVL; useful in FFT bit-reversal stages and cryptographic transforms."
+  },
+  {
+    "name": "llvm.vp.bswap",
+    "arch": "generic",
+    "description": "Predicated per-lane byte swap with mask/EVL; useful for endianness conversion and parsing/serialization."
+  },
+  {
+    "name": "llvm.vp.ceil",
+    "arch": "generic",
+    "description": "Predicated per-lane floating-point ceil with mask/EVL; useful in math kernels, quantization, and discretization."
+  },
+  {
+    "name": "llvm.vp.copysign",
+    "arch": "generic",
+    "description": "Predicated per-lane copy sign (magnitude from op0, sign from op1) with mask/EVL; useful for enforcing sign conventions and odd/even function composition."
+  },
+  {
+    "name": "llvm.vp.ctlz",
+    "arch": "generic",
+    "description": "Predicated per-lane count leading zeros with mask/EVL; useful for normalization, log2/priority encoders, and leading-one detection."
+  },
+  {
+    "name": "llvm.vp.ctpop",
+    "arch": "generic",
+    "description": "Predicated per-lane population count with mask/EVL; useful in Hamming weight, bitset algorithms, and cryptography."
+  },
+  {
+    "name": "llvm.vp.cttz",
+    "arch": "generic",
+    "description": "Predicated per-lane count trailing zeros with mask/EVL; useful for isolating low set bits, alignment, and priority encoders."
+  },
+  {
+    "name": "llvm.vp.cttz.elts",
+    "arch": "generic",
+    "description": "Counts trailing zero elements (consecutive lanes equal to zero) in a vector, under mask/EVL; useful to find first active lane or effective length in predicate/mask vectors."
+  },
+  {
+    "name": "llvm.vp.fabs",
+    "arch": "generic",
+    "description": "Predicated per-lane floating-point absolute value with mask/EVL; useful in norms, error metrics, and math kernels."
+  },
+  {
+    "name": "llvm.vp.fadd",
+    "arch": "generic",
+    "description": "Predicated per-lane floating-point addition with mask/EVL; useful for masked FP updates and tail-aware accumulations."
+  },
+  {
+    "name": "llvm.vp.fcmp",
+    "arch": "generic",
+    "description": "Predicated per-lane floating-point compare with mask/EVL; returns an i1 mask for conditional updates, masking, and reductions."
+  },
+  {
+    "name": "llvm.vp.fdiv",
+    "arch": "generic",
+    "description": "Vector-predicated floating-point divide (mask + EVL); used for masked/tail SIMD divisions without touching inactive lanes."
+  },
+  {
+    "name": "llvm.vp.floor",
+    "arch": "generic",
+    "description": "Vector-predicated floor per lane; useful in math/graphics kernels where only some lanes are active."
+  },
+  {
+    "name": "llvm.vp.fma",
+    "arch": "generic",
+    "description": "Vector-predicated fused multiply-add (a*b + c in one rounding); ideal for masked dot products and MAC-heavy loops."
+  },
+  {
+    "name": "llvm.vp.fmul",
+    "arch": "generic",
+    "description": "Vector-predicated floating-point multiply; used in masked vectorized arithmetic and tail handling."
+  },
+  {
+    "name": "llvm.vp.fmuladd",
+    "arch": "generic",
+    "description": "Vector-predicated non-fused mul+add (a*b + c as two ops); use when contraction to FMA is disallowed in masked loops."
+  },
+  {
+    "name": "llvm.vp.fneg",
+    "arch": "generic",
+    "description": "Vector-predicated floating negate (-x); sign flips in masked computations and tails."
+  },
+  {
+    "name": "llvm.vp.fpext",
+    "arch": "generic",
+    "description": "Vector-predicated FP extend (e.g., f32→f64); widen precision for active lanes only in vectorized code."
+  },
+  {
+    "name": "llvm.vp.fptosi",
+    "arch": "generic",
+    "description": "Vector-predicated FP-to-signed-int conversion; produce integer indices/results from FP under a mask."
+  },
+  {
+    "name": "llvm.vp.fptoui",
+    "arch": "generic",
+    "description": "Vector-predicated FP-to-unsigned-int conversion; common in graphics/image and quantization under masks."
+  },
+  {
+    "name": "llvm.vp.fptrunc",
+    "arch": "generic",
+    "description": "Vector-predicated FP truncate (e.g., f64→f32); narrow results for active lanes to save bandwidth."
+  },
+  {
+    "name": "llvm.vp.frem",
+    "arch": "generic",
+    "description": "Vector-predicated floating remainder per lane; used for periodic wrap/arithmetic on reals in masked loops."
+  },
+  {
+    "name": "llvm.vp.fshl",
+    "arch": "generic",
+    "description": "Vector-predicated funnel shift left (rotate/merge bits from two ints); used in crypto, hashing, and bit tricks under masks."
+  },
+  {
+    "name": "llvm.vp.fshr",
+    "arch": "generic",
+    "description": "Vector-predicated funnel shift right; enables rotations/bitfield extraction with predication."
+  },
+  {
+    "name": "llvm.vp.fsub",
+    "arch": "generic",
+    "description": "Vector-predicated floating-point subtraction; used in masked SIMD math and tail processing."
+  },
+  {
+    "name": "llvm.vp.gather",
+    "arch": "generic",
+    "description": "Vector-predicated gather load from scattered addresses; only active lanes are accessed, enabling safe indirect SIMD loads."
+  },
+  {
+    "name": "llvm.vp.icmp",
+    "arch": "generic",
+    "description": "Vector-predicated integer compare; computes per-lane boolean results for active lanes, forming masks for further predicated ops."
+  },
+  {
+    "name": "llvm.vp.inttoptr",
+    "arch": "generic",
+    "description": "Vector-predicated int-to-pointer cast; forms vector pointers/addresses for active lanes in vectorized memory operations."
+  },
+  {
+    "name": "llvm.vp.is.fpclass",
+    "arch": "generic",
+    "description": "Vector-predicated FP classification (NaN, Inf, subnormal, etc.); identify special values per lane under a mask."
+  },
+  {
+    "name": "llvm.vp.llrint",
+    "arch": "generic",
+    "description": "Vector-predicated llrint: rounds FP to signed 64-bit by current rounding mode; for strict numeric conversions under masks."
+  },
+  {
+    "name": "llvm.vp.load",
+    "arch": "generic",
+    "description": "Vector-predicated load with mask + EVL; reads only active lanes, avoiding faults on inactive lanes for masked/tail loads."
+  },
+  {
+    "name": "llvm.vp.lrint",
+    "arch": "generic",
+    "description": "Masked/EVL float-to-signed-integer rounding per current FP rounding mode (like C lrint); used for vectorized, exception-aware conversions."
+  },
+  {
+    "name": "llvm.vp.lshr",
+    "arch": "generic",
+    "description": "Masked/EVL logical right shift of integers; used in bitfield unpacking, cryptography, and general bit-manipulation."
+  },
+  {
+    "name": "llvm.vp.maximum",
+    "arch": "generic",
+    "description": "Masked/EVL IEEE maximum (NaNs propagate); used when strict IEEE semantics are required in vectorized max operations."
+  },
+  {
+    "name": "llvm.vp.maxnum",
+    "arch": "generic",
+    "description": "Masked/EVL numeric maximum (fmax semantics: choose the number if the other is NaN, both NaN→NaN); used for robust max/clamp ignoring NaNs."
+  },
+  {
+    "name": "llvm.vp.merge",
+    "arch": "generic",
+    "description": "Masked/EVL lane-wise merge: take from first vector where mask true, else from second (passthrough); used to blend masked results with prior values."
+  },
+  {
+    "name": "llvm.vp.minimum",
+    "arch": "generic",
+    "description": "Masked/EVL IEEE minimum (NaNs propagate); used for strict min operations in vector code."
+  },
+  {
+    "name": "llvm.vp.minnum",
+    "arch": "generic",
+    "description": "Masked/EVL numeric minimum (fmin semantics: choose the number if the other is NaN, both NaN→NaN); used for min/clamp that ignores NaNs."
+  },
+  {
+    "name": "llvm.vp.mul",
+    "arch": "generic",
+    "description": "Masked/EVL integer multiply; used in vectorized arithmetic, polynomial math, and hashing."
+  },
+  {
+    "name": "llvm.vp.nearbyint",
+    "arch": "generic",
+    "description": "Masked/EVL round-to-integer-value in FP domain per current rounding mode, without raising inexact; used for vectorized rounding."
+  },
+  {
+    "name": "llvm.vp.or",
+    "arch": "generic",
+    "description": "Masked/EVL bitwise OR of integers; used for combining flags and building bitmasks."
+  },
+  {
+    "name": "llvm.vp.ptrtoint",
+    "arch": "generic",
+    "description": "Masked/EVL pointer-to-integer cast per lane; used in vectorized address arithmetic and pointer hashing."
+  },
+  {
+    "name": "llvm.vp.reduce.add",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal sum of integer lanes (with an accumulator); used for vectorized reductions like summing elements."
+  },
+  {
+    "name": "llvm.vp.reduce.and",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal bitwise AND reduction; used for “all-set” checks and combining masks."
+  },
+  {
+    "name": "llvm.vp.reduce.fadd",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal floating-point sum (with a start value; honors FP flags); used for vectorized sums and dot products."
+  },
+  {
+    "name": "llvm.vp.reduce.fmax",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal fmax reduction (numeric max: prefers numbers over NaNs); used to find a max while ignoring NaNs."
+  },
+  {
+    "name": "llvm.vp.reduce.fmaximum",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal IEEE maximum reduction (NaNs propagate); used when NaNs must poison the reduction result."
+  },
+  {
+    "name": "llvm.vp.reduce.fmin",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal fmin reduction (numeric min: prefers numbers over NaNs); used to find a min while ignoring NaNs."
+  },
+  {
+    "name": "llvm.vp.reduce.fminimum",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal IEEE minimum reduction (NaNs propagate); used for strict IEEE-compliant min reductions."
+  },
+  {
+    "name": "llvm.vp.reduce.fmul",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal floating-point product (with a start value); used for product reductions, likelihoods, and geometric means."
+  },
+  {
+    "name": "llvm.vp.reduce.mul",
+    "arch": "generic",
+    "description": "Masked/EVL horizontal integer product; used in polynomial evaluations and hash/product accumulations."
+  },
+  {
+    "name": "llvm.vp.reduce.or",
+    "arch": "generic",
+    "description": "Masked vector reduction computing bitwise OR of active lanes (with EVL); used to aggregate flags/masks in predicated vector loops (e.g., SVE/AVX-512)."
+  },
+  {
+    "name": "llvm.vp.reduce.smax",
+    "arch": "generic",
+    "description": "Masked reduction to the signed maximum over active lanes; used for max scans over arrays with tail predication."
+  },
+  {
+    "name": "llvm.vp.reduce.smin",
+    "arch": "generic",
+    "description": "Masked reduction to the signed minimum over active lanes; used for min scans in vectorized loops with masked tails."
+  },
+  {
+    "name": "llvm.vp.reduce.umax",
+    "arch": "generic",
+    "description": "Masked reduction to the unsigned maximum over active lanes; used when data are unsigned (e.g., bytes) in parallel scans."
+  },
+  {
+    "name": "llvm.vp.reduce.umin",
+    "arch": "generic",
+    "description": "Masked reduction to the unsigned minimum over active lanes; used for range minima on unsigned data."
+  },
+  {
+    "name": "llvm.vp.reduce.xor",
+    "arch": "generic",
+    "description": "Masked reduction computing XOR of active lanes; used for parity bits, simple checksums, and hashing."
+  },
+  {
+    "name": "llvm.vp.rint",
+    "arch": "generic",
+    "description": "Per-lane round-to-integer using current FP rounding mode (returns FP), with mask/EVL; used in numerics that must honor the FP environment under predication."
+  },
+  {
+    "name": "llvm.vp.round",
+    "arch": "generic",
+    "description": "Per-lane round to nearest, ties away from zero (returns FP), with mask/EVL; used to implement C round() in vectorized code."
+  },
+  {
+    "name": "llvm.vp.roundeven",
+    "arch": "generic",
+    "description": "Per-lane round to nearest, ties to even (banker’s rounding), masked/EVL; used for IEEE-conformant rounding in SIMD code."
+  },
+  {
+    "name": "llvm.vp.roundtozero",
+    "arch": "generic",
+    "description": "Per-lane round toward zero (truncate fractional part, returns FP), masked/EVL; used for fast truncation when vectorizing conversions."
+  },
+  {
+    "name": "llvm.vp.sadd.sat",
+    "arch": "generic",
+    "description": "Per-lane signed saturating add under mask/EVL; clamps on overflow; used in DSP, image/audio processing, and robust SIMD arithmetic."
+  },
+  {
+    "name": "llvm.vp.scatter",
+    "arch": "generic",
+    "description": "Masked vector scatter store to non-contiguous addresses with EVL; used for irregular memory writes in vectorized loops (e.g., sparse/indirect stores)."
+  },
+  {
+    "name": "llvm.vp.sdiv",
+    "arch": "generic",
+    "description": "Per-lane signed integer division with mask/EVL; used when vectorizing divides with predication/tail handling."
+  },
+  {
+    "name": "llvm.vp.select",
+    "arch": "generic",
+    "description": "Masked per-lane select/blend between two vectors with EVL; used for if-conversion and blending results in vector code."
+  },
+  {
+    "name": "llvm.vp.sext",
+    "arch": "generic",
+    "description": "Masked sign-extension from narrower to wider integer element type with EVL; used in widening operations and signed conversions."
+  },
+  {
+    "name": "llvm.vp.shl",
+    "arch": "generic",
+    "description": "Per-lane left shift with mask/EVL; used in bitfield operations and scaling by powers of two in vectorized code."
+  },
+  {
+    "name": "llvm.vp.sitofp",
+    "arch": "generic",
+    "description": "Per-lane signed int to float conversion under mask/EVL; used for vectorized casts and mixed-precision math."
+  },
+  {
+    "name": "llvm.vp.smax",
+    "arch": "generic",
+    "description": "Per-lane signed maximum between two vectors with mask/EVL; used for clamping, ReLU-like ops, and elementwise maxima."
+  },
+  {
+    "name": "llvm.vp.smin",
+    "arch": "generic",
+    "description": "Per-lane signed minimum between two vectors with mask/EVL; used for clamping and elementwise minima."
+  },
+  {
+    "name": "llvm.vp.sqrt",
+    "arch": "generic",
+    "description": "Per-lane square root with mask/EVL; used in math kernels (norms, distance, normalization) with predication/tail folding."
+  },
+  {
+    "name": "llvm.vp.srem",
+    "arch": "generic",
+    "description": "Predicated per-lane signed remainder (mask + EVL control); used for masked/tail vectorized modulo on signed integers."
+  },
+  {
+    "name": "llvm.vp.ssub.sat",
+    "arch": "generic",
+    "description": "Predicated signed saturating subtract (clamps on overflow); used in DSP, image/audio pipelines, and clamped differences."
+  },
+  {
+    "name": "llvm.vp.store",
+    "arch": "generic",
+    "description": "Predicated vector store to memory (only active lanes written, EVL limits lanes); used for masked/tail stores in vectorized loops."
+  },
+  {
+    "name": "llvm.vp.sub",
+    "arch": "generic",
+    "description": "Predicated per-lane integer subtraction with wrap semantics; used in masked arithmetic and loop predication."
+  },
+  {
+    "name": "llvm.vp.trunc",
+    "arch": "generic",
+    "description": "Predicated per-lane integer narrowing (truncate high bits); used in vectorized narrowing conversions and packing."
+  },
+  {
+    "name": "llvm.vp.uadd.sat",
+    "arch": "generic",
+    "description": "Predicated unsigned saturating add (clamps at max); used in pixel ops, accumulators, video/audio processing."
+  },
+  {
+    "name": "llvm.vp.udiv",
+    "arch": "generic",
+    "description": "Predicated per-lane unsigned division (div-by-zero is UB per lane); used for masked/tail vector divides."
+  },
+  {
+    "name": "llvm.vp.uitofp",
+    "arch": "generic",
+    "description": "Predicated per-lane unsigned integer to float conversion; used in vectorized numeric conversions."
+  },
+  {
+    "name": "llvm.vp.umax",
+    "arch": "generic",
+    "description": "Predicated per-lane unsigned maximum; used for clamps, min/max filters, and reductions."
+  },
+  {
+    "name": "llvm.vp.umin",
+    "arch": "generic",
+    "description": "Predicated per-lane unsigned minimum; used for clamps, min/max filters, and reductions."
+  },
+  {
+    "name": "llvm.vp.urem",
+    "arch": "generic",
+    "description": "Predicated per-lane unsigned remainder (div-by-zero is UB per lane); used for masked modulo operations."
+  },
+  {
+    "name": "llvm.vp.usub.sat",
+    "arch": "generic",
+    "description": "Predicated unsigned saturating subtract (floors at 0); used for underflow-safe diffs, image/video ops."
+  },
+  {
+    "name": "llvm.vp.xor",
+    "arch": "generic",
+    "description": "Predicated per-lane bitwise XOR; used for masked bit ops, parity, hashing, and toggling flags."
+  },
+  {
+    "name": "llvm.vp.zext",
+    "arch": "generic",
+    "description": "Predicated per-lane zero-extension to wider integer; used in vectorized widening and unsigned promotion."
+  },
+  {
+    "name": "llvm.vscale",
+    "arch": "generic",
+    "description": "Returns the runtime scale factor for scalable vectors (vscale); used to size loops/arrays and compute trip counts for SVE/RVV."
+  },
+  {
+    "name": "llvm.write_register",
+    "arch": "generic",
+    "description": "Writes a value to a target-specific hardware register by name; used in low-level runtimes, kernels, and embedded code for CSR/special-reg control."
+  },
+  {
+    "name": "llvm.xray.customevent",
+    "arch": "generic",
+    "description": "Emits a user-defined payload event into the XRay trace at runtime; used to annotate traces with app-specific markers."
+  },
+  {
+    "name": "llvm.xray.typedevent",
+    "arch": "generic",
+    "description": "Emits a typed XRay event (type ID + payload) into the trace; used for structured, domain-specific runtime annotations."
+  }
+]

@@ -272,10 +272,12 @@ class StrategyRefinement:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_prompt(ir: str, advice: str, analysis: str) -> str:
+    def _build_prompt(ir: str, advice: str, analysis: str,
+                      intrinsic_advice: str = "") -> str:
         ir = (ir or "").strip()
         advice = (advice or "").strip()
         analysis = (analysis or "").strip()
+        intrinsic_advice = (intrinsic_advice or "").strip()
 
         parts = [
             "Please optimize the following code to outperform LLVM -O3.",
@@ -290,8 +292,12 @@ class StrategyRefinement:
         parts += ["The corresponding analysis info is below.", "<analysis>"]
         if analysis:
             parts += ["", analysis]
+        parts += ["</analysis>", ""]
+        if intrinsic_advice:
+            parts += [
+                "<intrinsics>", intrinsic_advice, "</intrinsics>", "",
+            ]
         parts += [
-            "</analysis>", "",
             "You need to keep boundary checks.",
             "Please output the final optimization advice wrapped in "
             "<advice>...</advice> and the full optimized LLVM IR wrapped "
@@ -315,6 +321,7 @@ class StrategyRefinement:
         max_files: int = 0,
         continue_on_error: bool = False,
         save_intermediate: bool = False,
+        intrinsic_advice: str = "",
     ) -> str:
         """Build analysis-enriched prompts.  Returns the output directory."""
 
@@ -403,7 +410,10 @@ class StrategyRefinement:
             else:
                 log("  WARN: no valid pipelines; analysis section will be empty")
 
-            prompt = self._build_prompt(ir=ir, advice=advice, analysis=analysis_text)
+            prompt = self._build_prompt(
+                ir=ir, advice=advice, analysis=analysis_text,
+                intrinsic_advice=intrinsic_advice,
+            )
             out_prompt.write_text(prompt, encoding="utf-8")
             log(f"  wrote: {out_prompt.name}")
 
