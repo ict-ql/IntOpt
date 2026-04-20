@@ -90,10 +90,18 @@ class IROptimizer:
         """Retrieve intrinsic suggestions if enabled in config."""
         cfg = self.config
         if not getattr(cfg, "intrinsic_enabled", False):
+            log("Intrinsic advisor: disabled (intrinsic_enabled=false)")
             return ""
         kb_path = getattr(cfg, "intrinsic_kb_path", "")
         emb_model = getattr(cfg, "intrinsic_embedding_model", "")
-        if not kb_path or not Path(kb_path).exists() or not emb_model:
+        if not kb_path:
+            log("Intrinsic advisor: skipped (intrinsic_kb_path not set)")
+            return ""
+        if not Path(kb_path).exists():
+            log(f"Intrinsic advisor: skipped (kb_path not found: {kb_path})")
+            return ""
+        if not emb_model:
+            log("Intrinsic advisor: skipped (intrinsic_embedding_model not set)")
             return ""
         try:
             if self._intrinsic_advisor is None:
@@ -106,9 +114,16 @@ class IROptimizer:
                 api_mode=getattr(cfg, "api_mode", "auto"),
                 top_k=top_k,
             )
-            return self._intrinsic_advisor.format_suggestions(suggestions)
+            result = self._intrinsic_advisor.format_suggestions(suggestions)
+            if result:
+                log(f"Intrinsic advisor: {len(suggestions)} suggestions retrieved")
+            else:
+                log("Intrinsic advisor: no suggestions matched")
+            return result
         except Exception as e:
             log(f"WARN: intrinsic advisor failed: {e}")
+            import traceback
+            traceback.print_exc()
             return ""
 
     # ------------------------------------------------------------------
@@ -206,6 +221,11 @@ class IROptimizer:
         log("Step 3: Strategy refinement")
         ir_text = (dataset_dir / input_path.name).read_text(encoding="utf-8")
         intrinsic_text = self._get_intrinsic_advice(ir_text)
+        if intrinsic_text:
+            intrinsic_file = temp / "step3_refinement" / f"{input_path.stem}.intrinsic_suggestions.txt"
+            intrinsic_file.parent.mkdir(parents=True, exist_ok=True)
+            intrinsic_file.write_text(intrinsic_text, encoding="utf-8")
+            log(f"Intrinsic suggestions saved to: {intrinsic_file}")
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
             ll_dir=str(dataset_dir),
@@ -288,6 +308,7 @@ class IROptimizer:
         log("Step 3: Strategy refinement")
         # Note: intrinsic advice in batch mode is not per-file;
         # set intrinsic_enabled=false for batch or enhance refine() later
+        # 需要重塑这个adivisor模块
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
             ll_dir=data_path,
