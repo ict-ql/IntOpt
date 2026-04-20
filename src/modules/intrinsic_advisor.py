@@ -644,21 +644,15 @@ class IntrinsicAdvisor:
             return ""
 
         parts = [
-            "The following LLVM intrinsics may be relevant to this code "
-            "(retrieved from the intrinsic knowledge base by semantic similarity):",
+            "Available hardware intrinsics (ranked by relevance):",
             "",
         ]
         for i, s in enumerate(suggestions, 1):
             parts.append(
-                f"{i}. @{s['name']} [{s['arch']}] (similarity={s['score']})"
+                f"{i}. @{s['name']} [{s['arch']}] (relevance={s['score']})"
             )
             parts.append(f"   {s['description']}")
             parts.append("")
 
-        parts.append(
-            "Consider whether any of these intrinsics could replace or "
-            "improve existing operations. If you use a target-specific "
-            "intrinsic, add the appropriate target-features attribute."
-        )
         return "\n".join(parts)
 
