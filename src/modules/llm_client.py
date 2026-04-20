@@ -116,42 +116,11 @@ class LLMClient:
                     model=model,
                     messages=[{"role": "user", "content": prompt_text}],
                     temperature=temperature,
-                    max_completion_tokens=max_output_tokens,
                     store=store,
                 )
                 result = self._extract_chat_text(resp)
-                if not result or not result.strip():
-                    finish = getattr(resp.choices[0], "finish_reason", "?") if resp.choices else "no_choices"
-                    content_repr = repr(resp.choices[0].message.content) if resp.choices else "N/A"
-                    log(f"  DEBUG: chat empty — finish_reason={finish}, "
-                        f"content={content_repr}, "
-                        f"prompt_len={len(prompt_text)}")
-                    # finish_reason=length with empty content means prompt
-                    # consumed the entire context window. Retry without
-                    # max_completion_tokens to let the API auto-allocate.
-                    if finish == "length":
-                        log("  Retrying without max_completion_tokens ...")
-                        resp2 = client.chat.completions.create(
-                            model=model,
-                            messages=[{"role": "user", "content": prompt_text}],
-                            temperature=temperature,
-                            store=store,
-                        )
-                        result2 = self._extract_chat_text(resp2)
-                        if result2 and result2.strip():
-                            return result2
-                    raise RuntimeError("chat API returned empty output")
                 return result
             except Exception as e:
-                if "max_completion_tokens" in str(e).lower():
-                    resp = client.chat.completions.create(
-                        model=model,
-                        messages=[{"role": "user", "content": prompt_text}],
-                        temperature=temperature,
-                        max_tokens=max_output_tokens,
-                        store=store,
-                    )
-                    return self._extract_chat_text(resp)
                 raise
 
         for attempt in range(max_retries + 1):
