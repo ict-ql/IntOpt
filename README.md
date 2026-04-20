@@ -112,14 +112,27 @@ Outputs:
 ### intrinsic advisor
 
 #### 创建knowledge base
-# 只处理 1 个 intrinsic，调试用
+* 只处理 1 个 intrinsic，调试用
 python scripts/build_intrinsic_kb.py --config config/config.yaml --limit 1 --archs x86,generic
 
-# 处理 5 个
+* 处理 5 个
 python scripts/build_intrinsic_kb.py --config config/config.yaml --limit 5
 
-# 全量
+* 全量
 python scripts/build_intrinsic_kb.py --config config/config.yaml
+
+### ask llm
+* 直接问
+python scripts/ask_llm.py --config config/config.yaml -p "What does llvm.fma do?"
+
+* 把 prompt 文件丢进去
+python scripts/ask_llm.py --config config/config.yaml --file test/gemm/temp/step3_refinement/gemm_int8.prompt.ll
+
+* 交互模式（输入完按 Ctrl+D）
+python scripts/ask_llm.py --config config/config.yaml
+
+* 换模型
+python scripts/ask_llm.py --config config/config.yaml --model deepseek-v3.2 -p "hello"
 
 
 ## Configuration
