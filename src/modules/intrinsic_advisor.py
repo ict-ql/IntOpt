@@ -289,6 +289,53 @@ LLVM IR:
 """
 
 
+def _intrinsic_tier_boost(name: str) -> float:
+    """Return a multiplicative boost factor based on instruction "tier".
+
+    Higher-tier (more powerful) instructions get a larger boost so they
+    rank above simple scalar intrinsics at similar cosine similarity.
+
+    Tier 5 (1.5x): AMX tile operations (tdp*, tile*)
+    Tier 4 (1.35x): AVX-512 vector ops (avx512*, 512-bit)
+    Tier 3 (1.2x): AVX2 / 256-bit vector ops
+    Tier 2 (1.1x): SSE / 128-bit vector ops, VNNI
+    Tier 1 (1.0x): generic scalar intrinsics
+    Tier 0 (0.7x): internal/debug/experimental intrinsics (demoted)
+    """
+    n = name.lower()
+
+    # Demote: internal codegen forms, debug, experimental, donothing
+    if ".internal" in n or "donothing" in n or "experimental" in n:
+        return 0.7
+    if "dbg." in n or "lifetime." in n or "invariant." in n:
+        return 0.7
+
+    # Tier 5: AMX tile operations
+    if "tdp" in n or "tile" in n or "amx" in n:
+        return 1.5
+
+    # Tier 4: AVX-512 (512-bit vectors)
+    if "avx512" in n or ".512" in n or "512" in n:
+        return 1.35
+
+    # Tier 3: AVX2 / 256-bit
+    if "avx2" in n or ".256" in n:
+        return 1.2
+
+    # Tier 2: SSE4 / VNNI / 128-bit SIMD
+    if "sse4" in n or "vnni" in n or "vpdp" in n:
+        return 1.1
+    if "sse" in n or "ssse" in n or ".128" in n:
+        return 1.05
+
+    # Tier 1.5: vector reduce, masked ops (target-independent but powerful)
+    if "vector.reduce" in n or "masked." in n or "vp." in n:
+        return 1.15
+
+    # Tier 1: everything else (generic scalar)
+    return 1.0
+
+
 class IntrinsicAdvisor:
     """Online intrinsic suggestion engine backed by a pre-built KB."""
 
@@ -413,6 +460,13 @@ class IntrinsicAdvisor:
                 e["arch"] in keep for e in self._kb
             ], dtype=bool)
             scores = np.where(mask, scores, -1.0)
+
+        # Boost advanced instructions: AMX > AVX-512 > AVX2 > SSE > generic scalar
+        # This ensures tile/vector intrinsics rank above simple scalar ones
+        for i, entry in enumerate(self._kb):
+            if scores[i] < 0:
+                continue
+            scores[i] *= _intrinsic_tier_boost(entry["name"])
 
         # Step 4: top-k
         top_indices = np.argsort(scores)[::-1][:top_k]
