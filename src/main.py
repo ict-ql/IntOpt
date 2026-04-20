@@ -85,6 +85,8 @@ class IROptimizer:
                             "/home/amax/yangz/Env/llvm-project/build/bin/clang++"),
         )
         self._intrinsic_advisor = None
+        self._host_cpu = ""
+        self._host_features_str = ""
 
     def _get_intrinsic_advice(self, ir_text: str) -> str:
         """Retrieve intrinsic suggestions if enabled in config."""
@@ -106,7 +108,11 @@ class IROptimizer:
         try:
             if self._intrinsic_advisor is None:
                 from modules.intrinsic_advisor import IntrinsicAdvisor
-                self._intrinsic_advisor = IntrinsicAdvisor(kb_path, emb_model)
+                # Detect host features for filtering
+                host_features = self._detect_host_features()
+                self._intrinsic_advisor = IntrinsicAdvisor(
+                    kb_path, emb_model, host_features=host_features,
+                )
             top_k = getattr(cfg, "intrinsic_top_k", 10)
             suggestions = self._intrinsic_advisor.suggest(
                 ir_text, self.llm,
@@ -125,6 +131,62 @@ class IROptimizer:
             import traceback
             traceback.print_exc()
             return ""
+
+    def _detect_host_features(self) -> set:
+        """Detect host CPU features using clang -march=native."""
+        cfg = self.config
+        clang = getattr(cfg, "clangxx", "").replace("clang++", "clang")
+        if not clang:
+            # Try to derive from llc path
+            llc = getattr(cfg, "llc", "")
+            if llc:
+                clang = llc.replace("llc", "clang")
+        if not clang or not Path(clang).exists():
+            log("WARN: clang not found, cannot detect host features")
+            return set()
+        try:
+            from modules.intrinsic_advisor import detect_host_features
+            march = getattr(cfg, "target_march", "native")
+            cpu, features_str, features = detect_host_features(clang, march=march)
+            if cpu:
+                log(f"Host CPU: {cpu}, features: {len(features)} flags")
+                # Cache for later use (attribute injection)
+                self._host_cpu = cpu
+                self._host_features_str = features_str
+            return features
+        except Exception as e:
+            log(f"WARN: host feature detection failed: {e}")
+            return set()
+
+    def inject_target_attributes(self, ir_text: str) -> str:
+        """Inject host CPU target-cpu and target-features into IR attributes.
+
+        Finds `attributes #N = { ... }` lines and adds/replaces
+        target-cpu and target-features if not already present."""
+        if not self._host_cpu and not self._host_features_str:
+            # Try to detect if not done yet
+            self._detect_host_features()
+        if not self._host_cpu:
+            return ir_text
+
+        from modules.intrinsic_advisor import features_to_attribute_string
+        attr_str = features_to_attribute_string(self._host_cpu, self._host_features_str)
+        if not attr_str:
+            return ir_text
+
+        lines = ir_text.splitlines()
+        result = []
+        for line in lines:
+            if line.startswith("attributes #") and "{" in line:
+                # Check if target-cpu already present
+                if '"target-cpu"' not in line:
+                    # Insert before the closing }
+                    line = line.rstrip()
+                    if line.endswith("}"):
+                        line = line[:-1].rstrip() + " " + attr_str + " }"
+            result.append(line)
+
+        return "\n".join(result)
 
     # ------------------------------------------------------------------
     # Prompt rewriting (inject refined advice into the realization prompt)
@@ -198,6 +260,14 @@ class IROptimizer:
         shutil.copy2(input_file, dataset_dir / input_path.name)
 
         cfg = self.config
+
+        # Inject target attributes into input IR before any processing
+        if getattr(cfg, "intrinsic_enabled", False) or getattr(cfg, "inject_target_attrs", False):
+            input_ll = dataset_dir / input_path.name
+            ir_text = input_ll.read_text(encoding="utf-8")
+            ir_text = self.inject_target_attributes(ir_text)
+            input_ll.write_text(ir_text, encoding="utf-8")
+            log(f"Injected target attributes into {input_ll.name}")
 
         # Step 1 — generate initial optimisation strategies
         log("Step 1: Strategy generation")
@@ -285,6 +355,14 @@ class IROptimizer:
         output_path.mkdir(parents=True, exist_ok=True)
         cfg = self.config
         n_files = sum(1 for _ in Path(data_path).glob("*.ll"))
+
+        # Inject target attributes into all input IR files
+        if getattr(cfg, "intrinsic_enabled", False) or getattr(cfg, "inject_target_attrs", False):
+            for ll_file in Path(data_path).glob("*.ll"):
+                ir_text = ll_file.read_text(encoding="utf-8")
+                ir_text = self.inject_target_attributes(ir_text)
+                ll_file.write_text(ir_text, encoding="utf-8")
+            log(f"Injected target attributes into {n_files} input files")
 
         # Step 1
         log("Step 1: Strategy generation")
@@ -407,6 +485,15 @@ class IROptimizer:
             # Prepare dataset directory
             dataset_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(input_file, dataset_dir / input_path.name)
+
+            # Inject target attributes into input IR
+            if getattr(cfg, "intrinsic_enabled", False) or getattr(cfg, "inject_target_attrs", False):
+                input_ll = dataset_dir / input_path.name
+                ir_text = input_ll.read_text(encoding="utf-8")
+                ir_text = self.inject_target_attributes(ir_text)
+                input_ll.write_text(ir_text, encoding="utf-8")
+                log(f"Injected target attributes into {input_ll.name}")
+
             log("STEP_RESULT:" + json.dumps({
                 "step": 0, "status": "ok",
                 "message": f"Prepared input: {input_path.name}",

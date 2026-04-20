@@ -26,6 +26,145 @@ from modules.utils import log
 
 
 # ======================================================================
+# CPU feature detection via clang
+# ======================================================================
+
+import subprocess
+
+
+def detect_host_features(clang_bin: str, march: str = "native") -> Tuple[str, str, Set[str]]:
+    """Detect CPU features for the given -march target.
+
+    Uses `clang -march=<march> -S -emit-llvm` on a dummy file to extract
+    the exact target-cpu and target-features attributes.
+
+    Returns (cpu_name, features_attr_string, feature_set).
+    """
+    try:
+        r = subprocess.run(
+            [clang_bin, "-x", "c", "-", "-S", "-emit-llvm",
+             "-o", "-", f"-march={march}"],
+            input="void f(){}\n",
+            capture_output=True, text=True, timeout=30,
+        )
+        cpu = ""
+        features_str = ""
+        features = set()
+
+        for line in r.stdout.splitlines():
+            if "target-cpu" in line:
+                m = re.search(r'"target-cpu"="([^"]+)"', line)
+                if m:
+                    cpu = m.group(1)
+            if "target-features" in line:
+                m = re.search(r'"target-features"="([^"]+)"', line)
+                if m:
+                    features_str = m.group(1)
+                    for feat in features_str.split(","):
+                        feat = feat.strip()
+                        if feat.startswith("+"):
+                            features.add(feat[1:])
+
+        return cpu, features_str, features
+    except Exception as e:
+        log(f"WARN: detect_host_features failed: {e}")
+        return "", "", set()
+
+
+def features_to_attribute_string(cpu: str, features_str: str) -> str:
+    """Build the LLVM IR attribute string for target-cpu + target-features.
+
+    Returns a string like:
+      "target-cpu"="sapphirerapids" "target-features"="+avx,+avx2,..."
+    """
+    parts = []
+    if cpu:
+        parts.append(f'"target-cpu"="{cpu}"')
+    if features_str:
+        parts.append(f'"target-features"="{features_str}"')
+    return " ".join(parts)
+
+
+# Map feature flags to intrinsic name patterns they enable
+# Used to filter intrinsics: if an intrinsic requires a feature not in
+# the host's feature set, it gets filtered out.
+_FEATURE_TO_INTRINSIC_PREFIX = {
+    "amx-int8": ["tdpbssd", "tdpbsud", "tdpbusd", "tdpbuud"],
+    "amx-bf16": ["tdpbf16"],
+    "amx-fp16": ["tdpfp16"],
+    "amx-tile": ["tile", "amx"],
+    "avx512f": ["avx512"],
+    "avx512bw": ["avx512.mask.pmov", "avx512bw"],
+    "avx512vnni": ["vpdpbusd", "vpdpwssd", "vnni"],
+    "avx2": ["avx2"],
+    "avx": ["avx."],
+    "sse4.2": ["sse42", "sse4.2"],
+    "sse4.1": ["sse41", "sse4.1"],
+    "ssse3": ["ssse3"],
+    "sse3": ["sse3"],
+    "sse2": ["sse2"],
+    "sse": ["sse."],
+    "fma": ["fma"],
+    "aes": ["aesni", "aes"],
+    "sha": ["sha"],
+    "pclmul": ["pclmul"],
+    "bmi": ["bmi."],
+    "bmi2": ["bmi2"],
+    "popcnt": ["popcnt"],
+    "lzcnt": ["lzcnt"],
+}
+
+
+def intrinsic_requires_unsupported_feature(
+    name: str, host_features: Set[str],
+) -> bool:
+    """Check if an intrinsic requires a feature the host doesn't support.
+
+    Returns True if the intrinsic should be FILTERED OUT."""
+    n = name.lower()
+
+    # Generic intrinsics (no arch prefix) are always supported
+    parts = name.split(".")
+    if len(parts) < 3 or parts[1] not in _KNOWN_TARGETS:
+        return False
+
+    # Check AMX specifically (common miss)
+    if "amx" in n or "tdp" in n or "tile" in n:
+        if "amx-tile" not in host_features:
+            return True
+        if "tdpbssd" in n or "tdpbsud" in n or "tdpbusd" in n or "tdpbuud" in n:
+            if "amx-int8" not in host_features:
+                return True
+        if "tdpbf16" in n:
+            if "amx-bf16" not in host_features:
+                return True
+        if "tdpfp16" in n:
+            if "amx-fp16" not in host_features:
+                return True
+
+    # Check AVX-512 variants
+    if "avx512" in n and "avx512f" not in host_features:
+        return True
+    if "avx512vnni" in n and "avx512vnni" not in host_features:
+        return True
+
+    # Check AVX2
+    if "avx2" in n and "avx2" not in host_features:
+        return True
+
+    # Check FMA
+    if ".fma" in n and "fma" not in host_features:
+        return True
+
+    # Check AES
+    if "aesni" in n or "aes" in n:
+        if "aes" not in host_features:
+            return True
+
+    return False
+
+
+# ======================================================================
 # 1. Parse intrinsic names from IntrinsicImpl.inc
 # ======================================================================
 
@@ -343,13 +482,18 @@ class IntrinsicAdvisor:
         self,
         kb_path: str,
         embedding_model_path: str,
+        host_features: Optional[Set[str]] = None,
     ):
         """*kb_path* can be:
           - A directory containing intrinsic.<arch>.json/npy files
           - A single .json file (legacy format)
+
+        *host_features*: if provided, filter out intrinsics that require
+        features not in this set.
         """
         self.kb_path = kb_path
         self.embedding_model_path = embedding_model_path
+        self.host_features = host_features
         self._kb: Optional[List[Dict]] = None
         self._embeddings: Optional[np.ndarray] = None
         self._embed_model = None
@@ -460,6 +604,14 @@ class IntrinsicAdvisor:
                 e["arch"] in keep for e in self._kb
             ], dtype=bool)
             scores = np.where(mask, scores, -1.0)
+
+        # Filter out intrinsics requiring unsupported host features
+        if self.host_features is not None:
+            for i, entry in enumerate(self._kb):
+                if scores[i] < 0:
+                    continue
+                if intrinsic_requires_unsupported_feature(entry["name"], self.host_features):
+                    scores[i] = -1.0
 
         # Boost advanced instructions: AMX > AVX-512 > AVX2 > SSE > generic scalar
         # This ensures tile/vector intrinsics rank above simple scalar ones
