@@ -88,8 +88,14 @@ class IROptimizer:
         self._host_cpu = ""
         self._host_features_str = ""
 
-    def _get_intrinsic_advice(self, ir_text: str) -> str:
-        """Retrieve intrinsic suggestions if enabled in config."""
+    def _get_intrinsic_advice(
+        self, ir_text: str,
+        cache_dir: str = "", cache_key: str = "",
+    ) -> str:
+        """Retrieve intrinsic suggestions if enabled in config.
+
+        *cache_dir*: directory to cache IR summaries.
+        *cache_key*: filename stem for the cache file."""
         cfg = self.config
         if not getattr(cfg, "intrinsic_enabled", False):
             log("Intrinsic advisor: disabled (intrinsic_enabled=false)")
@@ -108,7 +114,6 @@ class IROptimizer:
         try:
             if self._intrinsic_advisor is None:
                 from modules.intrinsic_advisor import IntrinsicAdvisor
-                # Detect host features for filtering
                 host_features = self._detect_host_features()
                 self._intrinsic_advisor = IntrinsicAdvisor(
                     kb_path, emb_model, host_features=host_features,
@@ -119,6 +124,8 @@ class IROptimizer:
                 model=getattr(cfg, "llm_model", "gpt-5"),
                 api_mode=getattr(cfg, "api_mode", "auto"),
                 top_k=top_k,
+                cache_dir=cache_dir,
+                cache_key=cache_key,
             )
             result = self._intrinsic_advisor.format_suggestions(suggestions)
             if result:
@@ -290,12 +297,18 @@ class IROptimizer:
         # Step 3 — refine strategies (add analysis info to prompts)
         log("Step 3: Strategy refinement")
         ir_text = (dataset_dir / input_path.name).read_text(encoding="utf-8")
-        intrinsic_text = self._get_intrinsic_advice(ir_text)
+        summary_cache_dir = str(temp / "IR_summaries")
+        intrinsic_text = self._get_intrinsic_advice(
+            ir_text,
+            cache_dir=summary_cache_dir,
+            cache_key=input_path.stem,
+        )
         if intrinsic_text:
             intrinsic_file = temp / "step3_refinement" / f"{input_path.stem}.intrinsic_suggestions.txt"
             intrinsic_file.parent.mkdir(parents=True, exist_ok=True)
             intrinsic_file.write_text(intrinsic_text, encoding="utf-8")
             log(f"Intrinsic suggestions saved to: {intrinsic_file}")
+        intrinsic_map = {input_path.stem: intrinsic_text} if intrinsic_text else None
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
             ll_dir=str(dataset_dir),
@@ -303,7 +316,7 @@ class IROptimizer:
             out_dir=str(temp / "step3_refinement"),
             timeout=cfg.timeout,
             verify_timeout=cfg.verify_timeout,
-            intrinsic_advice=intrinsic_text,
+            intrinsic_advice_map=intrinsic_map,
         )
 
         # Step 3b — LLM-based strategy refinement
@@ -384,17 +397,42 @@ class IROptimizer:
 
         # Step 3
         log("Step 3: Strategy refinement")
-        # Generate per-file intrinsic advice
+        # Generate per-file intrinsic advice (parallel + cached)
         intrinsic_advice_map = {}
         if getattr(cfg, "intrinsic_enabled", False):
-            for ll_file in Path(data_path).glob("*.ll"):
-                ir_text = ll_file.read_text(encoding="utf-8")
-                advice_text = self._get_intrinsic_advice(ir_text)
-                if advice_text:
-                    prefix = ll_file.stem
-                    intrinsic_advice_map[prefix] = advice_text
-            if intrinsic_advice_map:
-                log(f"Intrinsic advisor: generated advice for {len(intrinsic_advice_map)} files")
+            try:
+                if self._intrinsic_advisor is None:
+                    from modules.intrinsic_advisor import IntrinsicAdvisor
+                    host_features = self._detect_host_features()
+                    kb_path = getattr(cfg, "intrinsic_kb_path", "")
+                    emb_model = getattr(cfg, "intrinsic_embedding_model", "")
+                    self._intrinsic_advisor = IntrinsicAdvisor(
+                        kb_path, emb_model, host_features=host_features,
+                    )
+                ir_items = []
+                for ll_file in sorted(Path(data_path).glob("*.ll")):
+                    ir_items.append({
+                        "key": ll_file.stem,
+                        "ir_text": ll_file.read_text(encoding="utf-8"),
+                    })
+                if ir_items:
+                    summary_cache = os.path.join(output_dir, "IR_summaries")
+                    batch_results = self._intrinsic_advisor.batch_suggest(
+                        ir_items, self.llm,
+                        model=getattr(cfg, "llm_model", "gpt-5"),
+                        api_mode=getattr(cfg, "api_mode", "auto"),
+                        top_k=getattr(cfg, "intrinsic_top_k", 10),
+                        cache_dir=summary_cache,
+                        workers=min(getattr(cfg, "workers", 50), len(ir_items)),
+                    )
+                    for key, suggestions in batch_results.items():
+                        text = self._intrinsic_advisor.format_suggestions(suggestions)
+                        if text:
+                            intrinsic_advice_map[key] = text
+                    log(f"Intrinsic advisor: generated advice for "
+                        f"{len(intrinsic_advice_map)}/{len(ir_items)} files")
+            except Exception as e:
+                log(f"WARN: batch intrinsic advisor failed: {e}")
 
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
@@ -577,17 +615,21 @@ class IROptimizer:
                 if kb_path and Path(kb_path).exists() and emb_model:
                     try:
                         from modules.intrinsic_advisor import IntrinsicAdvisor
-                        advisor = IntrinsicAdvisor(kb_path, emb_model)
-                        # Read the IR for summary
+                        host_features = self._detect_host_features()
+                        advisor = IntrinsicAdvisor(
+                            kb_path, emb_model, host_features=host_features,
+                        )
                         ir_file = list(Path(str(dataset_dir)).glob("*.ll"))
                         if ir_file:
                             ir_text = ir_file[0].read_text(encoding="utf-8")
-                            top_k = getattr(cfg, "intrinsic_top_k", 10)
+                            summary_cache = str(temp / "IR_summaries")
                             suggestions = advisor.suggest(
                                 ir_text, self.llm,
                                 model=getattr(cfg, "llm_model", "gpt-5"),
                                 api_mode=getattr(cfg, "api_mode", "auto"),
-                                top_k=top_k,
+                                top_k=getattr(cfg, "intrinsic_top_k", 10),
+                                cache_dir=summary_cache,
+                                cache_key=ir_file[0].stem,
                             )
                             intrinsic_text = advisor.format_suggestions(suggestions)
                             if intrinsic_text:
@@ -596,6 +638,7 @@ class IROptimizer:
                         log(f"  WARN: intrinsic advisor failed: {e}")
 
             log("Step 3: Strategy refinement (building prompt)")
+            intrinsic_map = {input_path.stem: intrinsic_text} if intrinsic_text else None
             refine_dir = self.strategy_refine.refine(
                 in_dir=mapping_dir,
                 ll_dir=str(dataset_dir),
@@ -603,7 +646,7 @@ class IROptimizer:
                 out_dir=str(temp / "step3_refinement"),
                 timeout=cfg.timeout,
                 verify_timeout=cfg.verify_timeout,
-                intrinsic_advice=intrinsic_text,
+                intrinsic_advice_map=intrinsic_map,
             )
 
             # Output analysis from prompt for user review BEFORE LLM call

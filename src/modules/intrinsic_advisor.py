@@ -546,66 +546,20 @@ class IntrinsicAdvisor:
         emb = model.encode([text], normalize_embeddings=True)
         return np.array(emb, dtype=np.float32)[0]
 
-    def suggest(
-        self,
-        ir_text: str,
-        llm_client,
-        model: str = "gpt-5",
-        api_mode: str = "auto",
-        top_k: int = 10,
+    def _search_kb(
+        self, query_emb: np.ndarray, top_k: int,
         arch_filter: Optional[Set[str]] = None,
     ) -> List[Dict[str, str]]:
-        """Suggest intrinsics for the given IR.
-
-        Steps:
-          1. Summarize IR via LLM
-          2. Embed the summary
-          3. Cosine similarity search in KB
-          4. Return top-k results
-
-        Returns list of {name, arch, description, score}."""
-        self._load_kb()
+        """Search KB by embedding, apply filters and boosting, return top-k."""
         assert self._kb is not None and self._embeddings is not None
 
-        # Step 1: summarize IR
-        # Truncate IR to avoid token limits
-        ir_truncated = ir_text[:6000] if len(ir_text) > 6000 else ir_text
-        prompt = _SUMMARY_PROMPT.format(ir_text=ir_truncated)
-
-        log("Generating IR summary for intrinsic search ...")
-        try:
-            summary = llm_client._call_with_retry(
-                prompt_text=prompt,
-                model=model,
-                max_output_tokens=512,
-                temperature=0.3,
-                truncation="auto",
-                store=False,
-                api_mode=api_mode,
-                max_retries=1,
-                base_backoff=1.0,
-            )
-        except Exception as e:
-            log(f"WARN: IR summary failed: {e}")
-            summary = ir_truncated[:2000]
-
-        log(f"IR summary: {summary[:200]}...")
-
-        # Step 2: embed
-        query_emb = self._embed_query(summary)
-
-        # Step 3: cosine similarity (embeddings are already normalized)
         scores = self._embeddings @ query_emb  # (N,)
 
-        # Optional arch filter
         if arch_filter:
             keep = arch_filter | {"generic"}
-            mask = np.array([
-                e["arch"] in keep for e in self._kb
-            ], dtype=bool)
+            mask = np.array([e["arch"] in keep for e in self._kb], dtype=bool)
             scores = np.where(mask, scores, -1.0)
 
-        # Filter out intrinsics requiring unsupported host features
         if self.host_features is not None:
             for i, entry in enumerate(self._kb):
                 if scores[i] < 0:
@@ -613,16 +567,12 @@ class IntrinsicAdvisor:
                 if intrinsic_requires_unsupported_feature(entry["name"], self.host_features):
                     scores[i] = -1.0
 
-        # Boost advanced instructions: AMX > AVX-512 > AVX2 > SSE > generic scalar
-        # This ensures tile/vector intrinsics rank above simple scalar ones
         for i, entry in enumerate(self._kb):
             if scores[i] < 0:
                 continue
             scores[i] *= _intrinsic_tier_boost(entry["name"])
 
-        # Step 4: top-k
         top_indices = np.argsort(scores)[::-1][:top_k]
-
         results = []
         for idx in top_indices:
             idx = int(idx)
@@ -635,8 +585,159 @@ class IntrinsicAdvisor:
                 "description": entry["description"],
                 "score": f"{scores[idx]:.4f}",
             })
+        return results
+
+    def suggest(
+        self,
+        ir_text: str,
+        llm_client,
+        model: str = "gpt-5",
+        api_mode: str = "auto",
+        top_k: int = 10,
+        arch_filter: Optional[Set[str]] = None,
+        cache_dir: str = "",
+        cache_key: str = "",
+    ) -> List[Dict[str, str]]:
+        """Suggest intrinsics for a single IR.
+
+        If *cache_dir* and *cache_key* are set, the LLM summary is cached
+        as {cache_dir}/{cache_key}.summary.txt to avoid regeneration."""
+        self._load_kb()
+
+        summary = self._get_or_generate_summary(
+            ir_text, llm_client, model, api_mode, cache_dir, cache_key,
+        )
+
+        query_emb = self._embed_query(summary)
+        return self._search_kb(query_emb, top_k, arch_filter)
+
+    def batch_suggest(
+        self,
+        ir_items: List[Dict[str, str]],
+        llm_client,
+        model: str = "gpt-5",
+        api_mode: str = "auto",
+        top_k: int = 10,
+        arch_filter: Optional[Set[str]] = None,
+        cache_dir: str = "",
+        workers: int = 10,
+    ) -> Dict[str, List[Dict[str, str]]]:
+        """Suggest intrinsics for multiple IRs in parallel.
+
+        *ir_items*: list of {key, ir_text} dicts.
+        *cache_dir*: directory to cache summaries ({key}.summary.txt).
+
+        Returns {key: [suggestions]}."""
+        self._load_kb()
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Phase 1: generate summaries in parallel (with caching)
+        summaries: Dict[str, str] = {}
+        to_generate: List[Dict[str, str]] = []
+
+        for item in ir_items:
+            key = item["key"]
+            cached = self._read_cached_summary(cache_dir, key)
+            if cached is not None:
+                summaries[key] = cached
+            else:
+                to_generate.append(item)
+
+        if to_generate:
+            log(f"Generating {len(to_generate)} IR summaries "
+                f"(cached: {len(summaries)}, workers: {workers}) ...")
+
+            def _gen_one(item: Dict[str, str]) -> Tuple[str, str]:
+                key = item["key"]
+                ir_text = item["ir_text"]
+                summary = self._generate_summary(
+                    ir_text, llm_client, model, api_mode,
+                )
+                self._write_cached_summary(cache_dir, key, summary)
+                return key, summary
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(_gen_one, item): item["key"]
+                        for item in to_generate}
+                done = 0
+                for fut in as_completed(futs):
+                    done += 1
+                    key, summary = fut.result()
+                    summaries[key] = summary
+                    if done % 20 == 0 or done == len(futs):
+                        log(f"  Summaries: [{done}/{len(futs)}]")
+
+        # Phase 2: embed all summaries at once (batch)
+        keys_ordered = [item["key"] for item in ir_items]
+        texts = [summaries[k] for k in keys_ordered]
+        model_st = self._get_embed_model()
+        all_embs = model_st.encode(texts, normalize_embeddings=True,
+                                    batch_size=256, show_progress_bar=False)
+        all_embs = np.array(all_embs, dtype=np.float32)
+
+        # Phase 3: search KB for each
+        results: Dict[str, List[Dict[str, str]]] = {}
+        for i, key in enumerate(keys_ordered):
+            results[key] = self._search_kb(all_embs[i], top_k, arch_filter)
 
         return results
+
+    # ------------------------------------------------------------------
+    # Summary generation + caching helpers
+    # ------------------------------------------------------------------
+
+    def _generate_summary(
+        self, ir_text: str, llm_client, model: str, api_mode: str,
+    ) -> str:
+        ir_truncated = ir_text[:6000] if len(ir_text) > 6000 else ir_text
+        prompt = _SUMMARY_PROMPT.format(ir_text=ir_truncated)
+        try:
+            summary = llm_client._call_with_retry(
+                prompt_text=prompt,
+                model=model,
+                max_output_tokens=512,
+                temperature=0.3,
+                truncation="auto",
+                store=False,
+                api_mode=api_mode,
+                max_retries=1,
+                base_backoff=1.0,
+            )
+            return summary if summary and summary.strip() else ir_truncated[:2000]
+        except Exception as e:
+            log(f"WARN: IR summary failed: {e}")
+            return ir_truncated[:2000]
+
+    def _read_cached_summary(self, cache_dir: str, key: str) -> Optional[str]:
+        if not cache_dir:
+            return None
+        p = Path(cache_dir) / f"{key}.summary.txt"
+        if p.exists() and p.stat().st_size > 10:
+            return p.read_text(encoding="utf-8")
+        return None
+
+    def _write_cached_summary(self, cache_dir: str, key: str, summary: str):
+        if not cache_dir:
+            return
+        p = Path(cache_dir) / f"{key}.summary.txt"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(summary, encoding="utf-8")
+
+    def _get_or_generate_summary(
+        self, ir_text: str, llm_client, model: str, api_mode: str,
+        cache_dir: str = "", cache_key: str = "",
+    ) -> str:
+        """Get summary from cache or generate it."""
+        cached = self._read_cached_summary(cache_dir, cache_key)
+        if cached is not None:
+            log(f"Using cached summary for {cache_key}")
+            return cached
+        log("Generating IR summary for intrinsic search ...")
+        summary = self._generate_summary(ir_text, llm_client, model, api_mode)
+        log(f"IR summary: {summary[:200]}...")
+        self._write_cached_summary(cache_dir, cache_key, summary)
+        return summary
 
     def format_suggestions(self, suggestions: List[Dict[str, str]]) -> str:
         """Format suggestions as text for the refinement prompt."""
