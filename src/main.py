@@ -120,6 +120,7 @@ class IROptimizer:
                     kb_path, emb_model, host_features=host_features,
                 )
             top_k = getattr(cfg, "intrinsic_top_k", 10)
+            boost_thresh = getattr(cfg, "intrinsic_relevance_threshold", 0.45)
             suggestions = self._intrinsic_advisor.suggest(
                 ir_text, self.llm,
                 model=getattr(cfg, "llm_model", "gpt-5"),
@@ -127,6 +128,7 @@ class IROptimizer:
                 top_k=top_k,
                 cache_dir=cache_dir,
                 cache_key=cache_key,
+                boost_threshold=boost_thresh,
             )
             result = self._intrinsic_advisor.format_suggestions(suggestions)
             if result:
@@ -436,6 +438,7 @@ class IROptimizer:
                         top_k=getattr(cfg, "intrinsic_top_k", 10),
                         cache_dir=summary_cache,
                         workers=min(getattr(cfg, "workers", 50), len(ir_items)),
+                        boost_threshold=getattr(cfg, "intrinsic_relevance_threshold", 0.45),
                     )
                     for key, suggestions in batch_results.items():
                         text = self._intrinsic_advisor.format_suggestions(suggestions)
@@ -642,6 +645,7 @@ class IROptimizer:
                                 top_k=getattr(cfg, "intrinsic_top_k", 10),
                                 cache_dir=summary_cache,
                                 cache_key=ir_file[0].stem,
+                                boost_threshold=getattr(cfg, "intrinsic_relevance_threshold", 0.45),
                             )
                             intrinsic_text = advisor.format_suggestions(suggestions)
                             if intrinsic_text:

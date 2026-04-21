@@ -549,6 +549,7 @@ class IntrinsicAdvisor:
     def _search_kb(
         self, query_emb: np.ndarray, top_k: int,
         arch_filter: Optional[Set[str]] = None,
+        boost_threshold: float = 0.45,
     ) -> List[Dict[str, str]]:
         """Search KB by embedding, apply filters and boosting, return top-k."""
         assert self._kb is not None and self._embeddings is not None
@@ -567,11 +568,18 @@ class IntrinsicAdvisor:
                 if intrinsic_requires_unsupported_feature(entry["name"], self.host_features):
                     scores[i] = -1.0
 
+        # Boost advanced instructions, but only when base cosine similarity
+        # is above the threshold. This prevents irrelevant high-tier intrinsics
+        # (e.g. AVX-512 fp16 min for an i32 program) from outranking
+        # genuinely relevant lower-tier ones.
         for i, entry in enumerate(self._kb):
             if scores[i] < 0:
                 continue
-            # @TODO: when the scores[i] is too low, donnot multipul _intrinsic_tier_boost
-            scores[i] *= _intrinsic_tier_boost(entry["name"])
+            boost = _intrinsic_tier_boost(entry["name"])
+            if scores[i] >= boost_threshold:
+                scores[i] *= boost
+            elif boost < 1.0:
+                scores[i] *= boost
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         results = []
@@ -598,11 +606,12 @@ class IntrinsicAdvisor:
         arch_filter: Optional[Set[str]] = None,
         cache_dir: str = "",
         cache_key: str = "",
+        boost_threshold: float = 0.45,
     ) -> List[Dict[str, str]]:
         """Suggest intrinsics for a single IR.
 
-        If *cache_dir* and *cache_key* are set, the LLM summary is cached
-        as {cache_dir}/{cache_key}.summary.txt to avoid regeneration."""
+        *boost_threshold*: minimum cosine similarity to apply tier boosting.
+        Below this, high-tier intrinsics won't be promoted over relevant ones."""
         self._load_kb()
 
         summary = self._get_or_generate_summary(
@@ -610,7 +619,7 @@ class IntrinsicAdvisor:
         )
 
         query_emb = self._embed_query(summary)
-        return self._search_kb(query_emb, top_k, arch_filter)
+        return self._search_kb(query_emb, top_k, arch_filter, boost_threshold)
 
     def batch_suggest(
         self,
@@ -622,6 +631,7 @@ class IntrinsicAdvisor:
         arch_filter: Optional[Set[str]] = None,
         cache_dir: str = "",
         workers: int = 10,
+        boost_threshold: float = 0.45,
     ) -> Dict[str, List[Dict[str, str]]]:
         """Suggest intrinsics for multiple IRs in parallel.
 
@@ -680,7 +690,7 @@ class IntrinsicAdvisor:
         # Phase 3: search KB for each
         results: Dict[str, List[Dict[str, str]]] = {}
         for i, key in enumerate(keys_ordered):
-            results[key] = self._search_kb(all_embs[i], top_k, arch_filter)
+            results[key] = self._search_kb(all_embs[i], top_k, arch_filter, boost_threshold)
 
         return results
 
