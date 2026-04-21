@@ -75,6 +75,14 @@ def _parse_ir_structure(
     """Split IR into context lines (module-level) and function definition
     blocks using brace-counting.
 
+    Handles multi-line define signatures like:
+        define void @foo(
+          ptr %a,
+          i32 %b
+        ) {
+          ...
+        }
+
     Returns (context_lines, definitions) where each definition is the
     full text of one ``define ... { ... }`` block."""
     lines = text.splitlines()
@@ -83,20 +91,28 @@ def _parse_ir_structure(
     current_func: List[str] = []
     in_function = False
     brace_count = 0
+    seen_open_brace = False
 
     for line in lines:
         line = line.lstrip("\ufeff")
         if not line.strip():
             continue
 
-        if _DEFINE_RE.match(line):
+        if _DEFINE_RE.match(line) and not in_function:
             in_function = True
             brace_count = 0
+            seen_open_brace = False
 
         if in_function:
             current_func.append(line)
-            brace_count += line.count("{") - line.count("}")
-            if brace_count == 0:
+            opens = line.count("{")
+            closes = line.count("}")
+            brace_count += opens - closes
+            if opens > 0:
+                seen_open_brace = True
+            # Only end the function when we've seen at least one { and
+            # braces are balanced back to 0
+            if seen_open_brace and brace_count == 0:
                 in_function = False
                 definitions.append("\n".join(current_func))
                 current_func = []

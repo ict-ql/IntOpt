@@ -3,6 +3,7 @@ mapping, refinement, LLM-based rewriting, and post-processing."""
 
 import argparse
 import os
+import re
 import shutil
 import yaml
 from pathlib import Path
@@ -242,6 +243,15 @@ class IROptimizer:
 
             ctx = ctx.replace(OLD_HEADER, NEW_HEADER)
             ctx = ctx.replace(OLD_FOOTER, NEW_FOOTER)
+
+            # Remove <intrinsics>...</intrinsics> block and surrounding
+            # instruction text (not needed for the final realization pass)
+            ctx = re.sub(
+                r"IMPORTANT:.*?<intrinsics>.*?</intrinsics>.*?invoke them[^.]*\.\s*",
+                "", ctx, flags=re.DOTALL,
+            )
+            # Fallback: remove just the tags if the above didn't match
+            ctx = re.sub(r"<intrinsics>.*?</intrinsics>\s*", "", ctx, flags=re.DOTALL)
 
             (out_dir / f"{prefix}.prompt.ll").write_text(ctx, encoding="utf-8")
 
