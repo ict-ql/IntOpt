@@ -244,10 +244,12 @@ class IROptimizer:
             ctx = ctx.replace(OLD_HEADER, NEW_HEADER)
             ctx = ctx.replace(OLD_FOOTER, NEW_FOOTER)
 
-            # Remove <intrinsics>...</intrinsics> block and surrounding
-            # instruction text (not needed for the final realization pass)
+            # Remove intrinsics block and all surrounding instruction text
+            # Matches from "IMPORTANT:" all the way past "</intrinsics>" and
+            # any trailing instruction lines until the next blank line or tag
             ctx = re.sub(
-                r"IMPORTANT:.*?<intrinsics>.*?</intrinsics>.*?invoke them[^.]*\.\s*",
+                r"IMPORTANT:.*?</intrinsics>\s*"
+                r"(?:In your.*?\n)*\s*",
                 "", ctx, flags=re.DOTALL,
             )
             # Fallback: remove just the tags if the above didn't match

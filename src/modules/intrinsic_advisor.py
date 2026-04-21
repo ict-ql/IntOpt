@@ -570,6 +570,7 @@ class IntrinsicAdvisor:
         for i, entry in enumerate(self._kb):
             if scores[i] < 0:
                 continue
+            # @TODO: when the scores[i] is too low, donnot multipul _intrinsic_tier_boost
             scores[i] *= _intrinsic_tier_boost(entry["name"])
 
         top_indices = np.argsort(scores)[::-1][:top_k]
