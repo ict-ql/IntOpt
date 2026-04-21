@@ -384,9 +384,18 @@ class IROptimizer:
 
         # Step 3
         log("Step 3: Strategy refinement")
-        # Note: intrinsic advice in batch mode is not per-file;
-        # set intrinsic_enabled=false for batch or enhance refine() later
-        # 需要重塑这个adivisor模块
+        # Generate per-file intrinsic advice
+        intrinsic_advice_map = {}
+        if getattr(cfg, "intrinsic_enabled", False):
+            for ll_file in Path(data_path).glob("*.ll"):
+                ir_text = ll_file.read_text(encoding="utf-8")
+                advice_text = self._get_intrinsic_advice(ir_text)
+                if advice_text:
+                    prefix = ll_file.stem
+                    intrinsic_advice_map[prefix] = advice_text
+            if intrinsic_advice_map:
+                log(f"Intrinsic advisor: generated advice for {len(intrinsic_advice_map)} files")
+
         refine_dir = self.strategy_refine.refine(
             in_dir=mapping_dir,
             ll_dir=data_path,
@@ -394,6 +403,7 @@ class IROptimizer:
             out_dir=os.path.join(output_dir, "step3_refinement"),
             timeout=cfg.timeout,
             verify_timeout=cfg.verify_timeout,
+            intrinsic_advice_map=intrinsic_advice_map if intrinsic_advice_map else None,
         )
 
         # Step 3b — LLM-based strategy refinement

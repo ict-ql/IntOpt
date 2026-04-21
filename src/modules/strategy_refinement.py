@@ -332,6 +332,7 @@ class StrategyRefinement:
         continue_on_error: bool = False,
         save_intermediate: bool = False,
         intrinsic_advice: str = "",
+        intrinsic_advice_map: Optional[Dict[str, str]] = None,
     ) -> str:
         """Build analysis-enriched prompts.  Returns the output directory."""
 
@@ -420,9 +421,16 @@ class StrategyRefinement:
             else:
                 log("  WARN: no valid pipelines; analysis section will be empty")
 
+            # Per-file intrinsic advice takes priority over global
+            file_intrinsic = ""
+            if intrinsic_advice_map and prefix in intrinsic_advice_map:
+                file_intrinsic = intrinsic_advice_map[prefix]
+            elif intrinsic_advice:
+                file_intrinsic = intrinsic_advice
+
             prompt = self._build_prompt(
                 ir=ir, advice=advice, analysis=analysis_text,
-                intrinsic_advice=intrinsic_advice,
+                intrinsic_advice=file_intrinsic,
             )
             out_prompt.write_text(prompt, encoding="utf-8")
             log(f"  wrote: {out_prompt.name}")
