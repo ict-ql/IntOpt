@@ -5,7 +5,7 @@ import argparse
 import os
 import re
 import shutil
-from typing import List
+from typing import Dict, List
 import yaml
 from pathlib import Path
 
@@ -614,6 +614,8 @@ class IROptimizer:
             return self.perf_test(input_path, output_dir)
         elif mode == "verify":
             return self.verify(input_path, output_dir)
+        elif mode == "fallback":
+            return self.fallback_to_o3(input_path, output_dir)
         elif mode == "step":
             return self.run_step(input_path, output_dir, step)
         else:
@@ -1473,16 +1475,6 @@ class IROptimizer:
         self._write_verify_report(merged, work_dir)
         n_pass = sum(1 for r in merged.values() if r["status"] == "PASS")
         log(f"Verification complete. PASS={n_pass}/{len(merged)}")
-
-        # Fallback: replace verify-failed cases with opt -O3 output
-        failed_stems = {
-            stem for stem, info in merged.items()
-            if info["status"] != "PASS"
-        }
-        if failed_stems:
-            log(f"Replacing {len(failed_stems)} failed cases with O3 fallback ...")
-            self._fallback_to_o3(original_dir, optimized_dir, failed_stems)
-
         return str(work_dir)
 
     @staticmethod
@@ -1701,28 +1693,6 @@ class IROptimizer:
                 "per_corpus": [],
             }
 
-        # Fallback: replace cases that are verify-failed or slower than O3
-        # (speedup < 1.0) with opt -O3 output
-        fallback_stems = set()
-        for stem, info in results.items():
-            if info["status"] == "VERIFY_FAIL":
-                fallback_stems.add(stem)
-            elif info.get("speedup", 1.0) < 1.0:
-                fallback_stems.add(stem)
-
-        if fallback_stems:
-            # Resolve original_dir for O3 fallback
-            if ":" in input_path:
-                original_dir_fb = input_path.split(":", 1)[0]
-            else:
-                original_dir_fb = getattr(cfg, "ll_dir", "")
-            optimized_dir_fb = input_path if ":" not in input_path else input_path.split(":", 1)[1]
-
-            if original_dir_fb and Path(original_dir_fb).is_dir():
-                log(f"Replacing {len(fallback_stems)} cases "
-                    f"(verify-fail or speedup<1) with O3 fallback ...")
-                self._fallback_to_o3(original_dir_fb, optimized_dir_fb, fallback_stems)
-
         self._write_perf_report(results, perf_dir)
         return str(perf_dir)
 
@@ -1774,13 +1744,231 @@ class IROptimizer:
         log(f"Performance detail: {detail}")
 
 
+    # ------------------------------------------------------------------
+    # Fallback mode: replace bad cases with O3, re-benchmark
+    # ------------------------------------------------------------------
+
+    def fallback_to_o3(self, input_path: str, output_dir: str):
+        """Standalone fallback mode (--mode fallback).
+
+        Reads verify_report.csv and perf_report.csv from a previous run.
+        Generates O3 versions, benchmarks them, and for each case picks
+        the better result (ours vs O3).  Writes perf_report_final.csv.
+
+        *input_path*: original_dir:optimized_dir
+        *output_dir*: the output directory from previous verify/perf_test run
+        """
+        import csv
+        from modules.verification import build_combined_ir
+
+        cfg = self.config
+        work_dir = Path(output_dir)
+        verify_dir = work_dir / "verify"
+        perf_dir = work_dir / "perf_test"
+        fb = work_dir / "fallback"
+        fb.mkdir(parents=True, exist_ok=True)
+
+        # --- resolve dirs ---
+        if ":" in input_path:
+            original_dir, optimized_dir = input_path.split(":", 1)
+        else:
+            optimized_dir = input_path
+            original_dir = getattr(cfg, "ll_dir", "")
+        if not original_dir or not Path(original_dir).is_dir():
+            raise SystemExit("Cannot determine original IR directory")
+
+        # --- load previous reports ---
+        verify_status: Dict[str, str] = {}
+        vr = verify_dir / "verify_report.csv"
+        if vr.exists():
+            with vr.open("r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    verify_status[row["file"]] = row["status"]
+        log(f"Verify report: {len(verify_status)} cases")
+
+        our_perf: Dict[str, dict] = {}
+        pr = perf_dir / "perf_report.csv"
+        if pr.exists():
+            with pr.open("r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    our_perf[row["file"]] = {
+                        "status": row.get("status", ""),
+                        "speedup": float(row.get("speedup", 0)),
+                        "baseline_ns": float(row.get("baseline_ns", 0)),
+                        "opt_ns": float(row.get("opt_ns", 0)),
+                        "n_corpus": int(row.get("n_corpus", 0)),
+                    }
+        log(f"Perf report: {len(our_perf)} cases")
+
+        all_stems = set(verify_status.keys()) | set(our_perf.keys())
+        if not all_stems:
+            all_stems = {f.stem.replace(".optimized", "")
+                         for f in Path(optimized_dir).glob("*.ll")}
+        log(f"Total stems: {len(all_stems)}")
+
+        # --- Step 1: generate O3 optimized IR ---
+        log("Step 1/4: Generating O3 versions ...")
+        o3_opt = fb / "o3_optimized"
+        o3_opt.mkdir(parents=True, exist_ok=True)
+        self._fallback_to_o3(original_dir, str(o3_opt), all_stems)
+
+        # --- Step 2: build combined IR for O3 ---
+        log("Step 2/4: Building combined IR for O3 ...")
+        o3_combined = fb / "o3_combined"
+        o3_combined.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for stem in sorted(all_stems):
+            orig = Path(original_dir) / f"{stem}.ll"
+            o3f = o3_opt / f"{stem}.optimized.ll"
+            if not orig.exists() or not o3f.exists():
+                continue
+            combined = build_combined_ir(
+                orig.read_text(encoding="utf-8"),
+                o3f.read_text(encoding="utf-8"),
+            )
+            d = o3_combined / stem
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "combined.ll").write_text(combined, encoding="utf-8")
+            count += 1
+        log(f"  {count} combined IR files")
+
+        # --- Step 3: build + benchmark O3 via perf_tester.run_full ---
+        log("Step 3/4: Benchmarking O3 versions ...")
+        harness_cfg = getattr(cfg, "harness_dir", "")
+        corpus_cfg = getattr(cfg, "corpus_dir", "")
+        perf_harness_cfg = getattr(cfg, "perf_harness_dir", "")
+        build_workers = getattr(cfg, "build_workers", 16)
+
+        # Build fuzz binaries (needed for corpus collection)
+        o3_fuzz_bins = str(fb / "o3_fuzz_bins")
+        if harness_cfg and Path(harness_cfg).is_dir():
+            harness_dir = harness_cfg
+        else:
+            harness_dir = str(fb / "o3_harness")
+            self.diff_tester.generate_harnesses(
+                str(o3_combined), harness_dir,
+                model=getattr(cfg, "llm_model", "gpt-5"),
+                api_mode=getattr(cfg, "api_mode", "auto"),
+                workers=getattr(cfg, "workers", 50),
+            )
+        self.diff_tester.build_binaries(
+            str(o3_combined), harness_dir, o3_fuzz_bins,
+            workers=build_workers,
+        )
+
+        # Run full perf pipeline (reuses corpus_dir / perf_harness_dir from config)
+        o3_perf_dir = str(fb / "o3_perf")
+        o3_results = self.perf_tester.run_full(
+            combined_dir=str(o3_combined),
+            harness_dir=harness_dir,
+            fuzz_bin_dir=o3_fuzz_bins,
+            work_dir=o3_perf_dir,
+            corpus_dir=corpus_cfg,
+            perf_harness_dir=perf_harness_cfg,
+            corpus_time=getattr(cfg, "corpus_time", 10),
+            corpus_workers=getattr(cfg, "corpus_workers", 0),
+            build_workers=build_workers,
+            bench_iters=getattr(cfg, "bench_iters", 10000),
+            bench_timeout=getattr(cfg, "bench_timeout", 60),
+            bench_workers=getattr(cfg, "bench_workers", 1),
+        )
+
+        # --- Step 4: compare and pick the best ---
+        log("Step 4/4: Comparing ours vs O3 ...")
+        final: Dict[str, dict] = {}
+        replaced = kept = 0
+
+        for stem in sorted(all_stems):
+            v = verify_status.get(stem, "UNKNOWN")
+            ours = our_perf.get(stem, {})
+            o3 = o3_results.get(stem, {})
+            our_sp = ours.get("speedup", 0)
+            o3_sp = o3.get("speedup", 0)
+
+            use_o3 = False
+            reason = ""
+            if v != "PASS":
+                use_o3 = True
+                reason = f"verify_{v}"
+            elif o3_sp > our_sp:
+                use_o3 = True
+                reason = f"o3_faster({o3_sp:.3f}>{our_sp:.3f})"
+
+            if use_o3:
+                # Replace optimized.ll
+                src = o3_opt / f"{stem}.optimized.ll"
+                dst = Path(optimized_dir) / f"{stem}.optimized.ll"
+                if src.exists():
+                    shutil.copy2(str(src), str(dst))
+                final[stem] = {
+                    "status": f"O3_FALLBACK({reason})",
+                    "speedup": o3_sp,
+                    "baseline_ns": o3.get("baseline_ns", 0),
+                    "opt_ns": o3.get("opt_ns", 0),
+                    "n_corpus": o3.get("n_corpus", 0),
+                    "per_corpus": o3.get("per_corpus", []),
+                }
+                replaced += 1
+            else:
+                final[stem] = {
+                    "status": ours.get("status", v),
+                    "speedup": our_sp,
+                    "baseline_ns": ours.get("baseline_ns", 0),
+                    "opt_ns": ours.get("opt_ns", 0),
+                    "n_corpus": ours.get("n_corpus", 0),
+                    "per_corpus": ours.get("per_corpus", []),
+                }
+                kept += 1
+
+        log(f"Result: kept={kept}  replaced_with_o3={replaced}")
+
+        # --- Write perf_report_final.csv ---
+        final_csv = perf_dir / "perf_report_final.csv"
+        fields = ["file", "status", "n_corpus", "baseline_ns", "opt_ns", "speedup"]
+        with final_csv.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            for stem, info in sorted(final.items()):
+                w.writerow({
+                    "file": stem,
+                    "status": info.get("status", ""),
+                    "n_corpus": info.get("n_corpus", 0),
+                    "baseline_ns": f"{info.get('baseline_ns', 0):.2f}",
+                    "opt_ns": f"{info.get('opt_ns', 0):.2f}",
+                    "speedup": f"{info.get('speedup', 0):.4f}",
+                })
+        log(f"Final report: {final_csv}")
+
+        # --- Write fallback_summary.csv ---
+        summary_csv = fb / "fallback_summary.csv"
+        with summary_csv.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "file", "decision", "our_speedup", "o3_speedup", "final_speedup",
+            ])
+            w.writeheader()
+            for stem in sorted(all_stems):
+                our_sp = our_perf.get(stem, {}).get("speedup", 0)
+                o3_sp = o3_results.get(stem, {}).get("speedup", 0)
+                fi = final.get(stem, {})
+                w.writerow({
+                    "file": stem,
+                    "decision": "O3" if "O3_FALLBACK" in fi.get("status", "") else "OURS",
+                    "our_speedup": f"{our_sp:.4f}",
+                    "o3_speedup": f"{o3_sp:.4f}",
+                    "final_speedup": f"{fi.get('speedup', 0):.4f}",
+                })
+        log(f"Summary: {summary_csv}")
+
+        return str(fb)
+
+
 # ======================================================================
 # CLI
 # ======================================================================
 
 def parse_args():
     p = argparse.ArgumentParser(description="LLVM IR Optimizer")
-    p.add_argument("--mode", choices=["single", "batch", "diff_test", "perf_test", "verify", "step"], required=True)
+    p.add_argument("--mode", choices=["single", "batch", "diff_test", "perf_test", "verify", "fallback", "step"], required=True)
     p.add_argument("--step", type=int, default=0,
                    help="Step number for interactive mode (0-5)")
     p.add_argument("--input", required=True,
