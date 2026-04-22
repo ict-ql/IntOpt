@@ -378,6 +378,191 @@ def _fix_missing_terminators(ir_text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Fix 6: Redundant vector type prefix on binary op operands
+# ---------------------------------------------------------------------------
+# LLVM IR binary ops like  add <4 x i32> %a, <4 x i32> <i32 1, ...>
+# are invalid — the second operand must NOT repeat the vector type.
+# Correct:  add <4 x i32> %a, <i32 1, ...>
+# This also applies to icmp, fcmp, and all bitwise/shift ops.
+# Exception: shufflevector requires the mask type.
+
+_BINOP_KEYWORDS = (
+    "add", "sub", "mul", "udiv", "sdiv", "urem", "srem",
+    "shl", "lshr", "ashr", "and", "or", "xor",
+    "fadd", "fsub", "fmul", "fdiv", "frem",
+    "icmp", "fcmp",
+)
+
+# Match:  <op> [flags] <N x ty> %var, <N x ty> <...>
+# Capture the redundant second  <N x ty>  before the constant vector.
+_REDUNDANT_VEC_TYPE_RE = re.compile(
+    r"(?P<pre>"
+    + "|".join(_BINOP_KEYWORDS)
+    + r")"
+    r"(?P<flags>[^<]*?)"                       # optional flags like nsw, nuw, eq, etc.
+    r"(?P<vecty><\d+\s+x\s+[^>]+>)"           # first operand type: <N x ty>
+    r"(?P<op1>\s+[^,]+,)"                      # first operand value + comma
+    r"\s*(?P=vecty)"                            # redundant repeat of same vector type
+    r"(?P<const>\s+<[^>]*>)",                   # the constant vector value
+)
+
+
+def _strip_redundant_vec_type(ir_text: str) -> str:
+    """Remove redundant vector type prefix on the second operand of binary ops.
+
+    Converts:  and <32 x i8> %v, <32 x i8> <i8 15, ...>
+    To:        and <32 x i8> %v, <i8 15, ...>
+    """
+    def _repl(m: re.Match) -> str:
+        return (m.group("pre") + m.group("flags") + m.group("vecty")
+                + m.group("op1") + m.group("const"))
+    return _REDUNDANT_VEC_TYPE_RE.sub(_repl, ir_text)
+
+
+# ---------------------------------------------------------------------------
+# Fix 7: Phi node predecessor label correction
+# ---------------------------------------------------------------------------
+# LLMs sometimes use the wrong predecessor label in phi nodes.
+# E.g.  %i = phi i32 [ 0, %outer.loop ], [ %i.next, %vec.loop ]
+# where %vec.loop is the current block, not a predecessor.
+# We build a simple CFG and fix incoming labels to actual predecessors.
+
+def _fix_phi_predecessors(ir_text: str) -> str:
+    """Fix phi nodes that reference non-predecessor blocks.
+
+    Builds a lightweight CFG from labels and terminators, then for each
+    phi incoming [ val, %label ], verifies %label is a real predecessor.
+    If not, finds the correct predecessor that branches to the current block."""
+    lines = ir_text.splitlines(keepends=False)
+
+    # Phase 1: Build CFG  {block_name: set of successor block names}
+    #          and reverse {block_name: set of predecessor block names}
+    label_re = re.compile(r"^([-a-zA-Z$._0-9]+):\s*(?:;.*)?$")
+    br_uncond_re = re.compile(r"^\s*br\s+label\s+%([-a-zA-Z$._0-9]+)")
+    br_cond_re = re.compile(
+        r"^\s*br\s+i1\s+[^,]+,\s*label\s+%([-a-zA-Z$._0-9]+)\s*,"
+        r"\s*label\s+%([-a-zA-Z$._0-9]+)"
+    )
+    switch_re = re.compile(r"label\s+%([-a-zA-Z$._0-9]+)")
+
+    successors: Dict[str, Set[str]] = {}
+    predecessors: Dict[str, Set[str]] = {}
+    current_block = None
+    # The entry block (first label or implicit) is special
+    first_block = None
+
+    for line in lines:
+        lm = label_re.match(line)
+        if lm:
+            current_block = lm.group(1)
+            if first_block is None:
+                first_block = current_block
+            successors.setdefault(current_block, set())
+            predecessors.setdefault(current_block, set())
+            continue
+
+        if current_block is None:
+            # Before any label — could be the implicit entry block
+            # Check for define to detect function start
+            if "define " in line:
+                current_block = "__entry__"
+                first_block = current_block
+                successors.setdefault(current_block, set())
+            continue
+
+        stripped = line.strip()
+        # Unconditional br
+        m = br_uncond_re.match(stripped)
+        if m:
+            tgt = m.group(1)
+            successors.setdefault(current_block, set()).add(tgt)
+            predecessors.setdefault(tgt, set()).add(current_block)
+            continue
+        # Conditional br
+        m = br_cond_re.match(stripped)
+        if m:
+            for tgt in (m.group(1), m.group(2)):
+                successors.setdefault(current_block, set()).add(tgt)
+                predecessors.setdefault(tgt, set()).add(current_block)
+            continue
+        # Switch (extract all labels)
+        if stripped.startswith("switch "):
+            for m in switch_re.finditer(stripped):
+                tgt = m.group(1)
+                successors.setdefault(current_block, set()).add(tgt)
+                predecessors.setdefault(tgt, set()).add(current_block)
+
+    if not predecessors:
+        return ir_text
+
+    # Phase 2: Fix phi nodes
+    phi_re = re.compile(
+        r"(?P<head>\s*%[-a-zA-Z$._0-9]+\s*=\s*phi\s+\S+)"
+        r"(?P<incomings>\s+\[.*)"
+    )
+    incoming_re = re.compile(
+        r"\[\s*(?P<val>[^,]+),\s*%(?P<label>[-a-zA-Z$._0-9]+)\s*\]"
+    )
+
+    current_block = None
+    result_lines = []
+    changed = False
+
+    for line in lines:
+        lm = label_re.match(line)
+        if lm:
+            current_block = lm.group(1)
+            result_lines.append(line)
+            continue
+
+        if current_block is None:
+            result_lines.append(line)
+            continue
+
+        pm = phi_re.match(line)
+        if not pm:
+            result_lines.append(line)
+            continue
+
+        preds = predecessors.get(current_block, set())
+        if not preds:
+            result_lines.append(line)
+            continue
+
+        new_line = line
+        for im in incoming_re.finditer(pm.group("incomings")):
+            inc_label = im.group("label")
+            if inc_label not in preds:
+                # Find the correct predecessor: look for a pred that has
+                # inc_label as a successor (i.e., inc_label branches to pred
+                # which branches to current_block), or just pick the pred
+                # that isn't already used in another incoming.
+                used_labels = {m.group("label")
+                               for m in incoming_re.finditer(new_line)}
+                # Strategy: find a predecessor that branches to current_block
+                # and whose name is similar or is the block that inc_label
+                # actually branches to.
+                candidates = preds - used_labels
+                if len(candidates) == 1:
+                    correct = candidates.pop()
+                    old = f"%{inc_label}"
+                    new = f"%{correct}"
+                    # Replace only within this phi's incoming brackets
+                    new_line = new_line.replace(
+                        f"[ {im.group('val')}, %{inc_label} ]",
+                        f"[ {im.group('val')}, %{correct} ]",
+                        1,
+                    )
+                    changed = True
+
+        result_lines.append(new_line)
+
+    if not changed:
+        return ir_text
+    return "\n".join(result_lines) + ("\n" if ir_text.endswith("\n") else "")
+
+
+# ---------------------------------------------------------------------------
 # Public class
 # ---------------------------------------------------------------------------
 
@@ -407,6 +592,8 @@ class PostProcessor:
             ctx = _fix_legacy_ptr_star(ctx)
             ctx = _fix_return_deref_attrs(ctx)
             ctx = _fix_missing_terminators(ctx)
+            ctx = _strip_redundant_vec_type(ctx)
+            ctx = _fix_phi_predecessors(ctx)
             f.write_text(ctx, encoding="utf-8")
 
         log(f"[PostProcess] Done. Output: {in_dir_p}")
