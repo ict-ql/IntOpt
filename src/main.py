@@ -201,6 +201,57 @@ class IROptimizer:
         return "\n".join(result)
 
     # ------------------------------------------------------------------
+    # O3 fallback: replace failed optimizations with opt -O3 output
+    # ------------------------------------------------------------------
+
+    def _fallback_to_o3(
+        self,
+        original_dir: str,
+        optimized_dir: str,
+        failed_stems: set,
+    ) -> int:
+        """For each stem in *failed_stems*, run `opt -O3` on the original IR
+        and overwrite the optimized file.  Returns count of replaced files."""
+        import subprocess as _sp
+
+        opt_bin = self.config.opt_bin
+        if not opt_bin or not Path(opt_bin).exists():
+            log("WARN: opt binary not found, cannot fallback to O3")
+            return 0
+
+        orig_p = Path(original_dir)
+        opt_p = Path(optimized_dir)
+        replaced = 0
+
+        for stem in sorted(failed_stems):
+            # Find original IR
+            orig_file = orig_p / f"{stem}.ll"
+            if not orig_file.exists():
+                orig_file = orig_p / f"{stem}.prompt.ll"
+            if not orig_file.exists():
+                log(f"  {stem}: no original IR found, skipping O3 fallback")
+                continue
+
+            # Run opt -O3
+            out_file = opt_p / f"{stem}.optimized.ll"
+            try:
+                r = _sp.run(
+                    [opt_bin, "-O3", "-S", str(orig_file), "-o", str(out_file)],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if r.returncode == 0:
+                    replaced += 1
+                    log(f"  {stem}: replaced with O3 fallback")
+                else:
+                    log(f"  {stem}: opt -O3 failed (rc={r.returncode})")
+            except Exception as e:
+                log(f"  {stem}: opt -O3 error: {e}")
+
+        if replaced:
+            log(f"O3 fallback: replaced {replaced}/{len(failed_stems)} files")
+        return replaced
+
+    # ------------------------------------------------------------------
     # Prompt rewriting (inject refined advice into the realization prompt)
     # ------------------------------------------------------------------
 
@@ -1422,6 +1473,16 @@ class IROptimizer:
         self._write_verify_report(merged, work_dir)
         n_pass = sum(1 for r in merged.values() if r["status"] == "PASS")
         log(f"Verification complete. PASS={n_pass}/{len(merged)}")
+
+        # Fallback: replace verify-failed cases with opt -O3 output
+        failed_stems = {
+            stem for stem, info in merged.items()
+            if info["status"] != "PASS"
+        }
+        if failed_stems:
+            log(f"Replacing {len(failed_stems)} failed cases with O3 fallback ...")
+            self._fallback_to_o3(original_dir, optimized_dir, failed_stems)
+
         return str(work_dir)
 
     @staticmethod
@@ -1639,6 +1700,28 @@ class IROptimizer:
                 "n_corpus": 0,
                 "per_corpus": [],
             }
+
+        # Fallback: replace cases that are verify-failed or slower than O3
+        # (speedup < 1.0) with opt -O3 output
+        fallback_stems = set()
+        for stem, info in results.items():
+            if info["status"] == "VERIFY_FAIL":
+                fallback_stems.add(stem)
+            elif info.get("speedup", 1.0) < 1.0:
+                fallback_stems.add(stem)
+
+        if fallback_stems:
+            # Resolve original_dir for O3 fallback
+            if ":" in input_path:
+                original_dir_fb = input_path.split(":", 1)[0]
+            else:
+                original_dir_fb = getattr(cfg, "ll_dir", "")
+            optimized_dir_fb = input_path if ":" not in input_path else input_path.split(":", 1)[1]
+
+            if original_dir_fb and Path(original_dir_fb).is_dir():
+                log(f"Replacing {len(fallback_stems)} cases "
+                    f"(verify-fail or speedup<1) with O3 fallback ...")
+                self._fallback_to_o3(original_dir_fb, optimized_dir_fb, fallback_stems)
 
         self._write_perf_report(results, perf_dir)
         return str(perf_dir)
