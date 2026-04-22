@@ -483,20 +483,20 @@ class IntrinsicAdvisor:
         kb_path: str,
         embedding_model_path: str,
         host_features: Optional[Set[str]] = None,
+        declares_path: str = "",
     ):
-        """*kb_path* can be:
-          - A directory containing intrinsic.<arch>.json/npy files
-          - A single .json file (legacy format)
-
-        *host_features*: if provided, filter out intrinsics that require
-        features not in this set.
+        """*kb_path*: directory with intrinsic.<arch>.json/npy or single .json.
+        *declares_path*: path to intrinsic_declares.json (declare signatures).
+        *host_features*: if provided, filter out unsupported intrinsics.
         """
         self.kb_path = kb_path
         self.embedding_model_path = embedding_model_path
         self.host_features = host_features
+        self.declares_path = declares_path
         self._kb: Optional[List[Dict]] = None
         self._embeddings: Optional[np.ndarray] = None
         self._embed_model = None
+        self._declares: Optional[Dict[str, List[str]]] = None
 
     def _load_kb(self):
         if self._kb is not None:
@@ -534,6 +534,52 @@ class IntrinsicAdvisor:
         self._embeddings = np.vstack(all_embeddings) if all_embeddings else np.empty((0, 0))
         log(f"Intrinsic KB total: {len(self._kb)} entries, "
             f"embeddings shape={self._embeddings.shape}")
+
+    def _load_declares(self):
+        """Load intrinsic declare signatures from JSON."""
+        if self._declares is not None:
+            return
+        if not self.declares_path or not Path(self.declares_path).exists():
+            if self.declares_path:
+                log(f"WARN: declares file not found: {self.declares_path}")
+            self._declares = {}
+            return
+        with open(self.declares_path, "r", encoding="utf-8") as f:
+            self._declares = json.load(f)
+        log(f"Loaded {len(self._declares)} intrinsic declare signatures")
+
+    def _get_declare(self, intrinsic_name: str) -> str:
+        """Look up the declare signature for an intrinsic.
+
+        Tries exact match first, then base name (without type suffix).
+        Ensures the returned string starts with 'declare'."""
+        self._load_declares()
+        assert self._declares is not None
+
+        def _extract(val) -> str:
+            if isinstance(val, str):
+                s = val
+            elif isinstance(val, list) and val:
+                s = val[0]
+            else:
+                return ""
+            # Ensure 'declare' prefix (extraction regex may have stripped it)
+            if s and not s.strip().startswith("declare"):
+                s = "declare " + s.strip()
+            return s
+
+        # Exact match
+        if intrinsic_name in self._declares:
+            return _extract(self._declares[intrinsic_name])
+
+        # Try base name: llvm.fma.v4f32 → llvm.fma
+        parts = intrinsic_name.split(".")
+        for i in range(len(parts) - 1, 1, -1):
+            base = ".".join(parts[:i])
+            if base in self._declares:
+                return _extract(self._declares[base])
+
+        return ""
 
     def _get_embed_model(self):
         if self._embed_model is None:
@@ -751,7 +797,10 @@ class IntrinsicAdvisor:
         return summary
 
     def format_suggestions(self, suggestions: List[Dict[str, str]]) -> str:
-        """Format suggestions as text for the refinement prompt."""
+        """Format suggestions as text for the refinement prompt.
+
+        Signatures are NOT included here — they are attached later in
+        the realization prompt by _rewrite_prompts."""
         if not suggestions:
             return ""
 

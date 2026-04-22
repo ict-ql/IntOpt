@@ -5,6 +5,7 @@ import argparse
 import os
 import re
 import shutil
+from typing import List
 import yaml
 from pathlib import Path
 
@@ -118,6 +119,7 @@ class IROptimizer:
                 host_features = self._detect_host_features()
                 self._intrinsic_advisor = IntrinsicAdvisor(
                     kb_path, emb_model, host_features=host_features,
+                    declares_path=getattr(cfg, "intrinsic_declares_path", ""),
                 )
             top_k = getattr(cfg, "intrinsic_top_k", 10)
             boost_thresh = getattr(cfg, "intrinsic_relevance_threshold", 0.45)
@@ -202,10 +204,13 @@ class IROptimizer:
     # Prompt rewriting (inject refined advice into the realization prompt)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _rewrite_prompts(refinement_dir, out_dir) -> str:
+    def _rewrite_prompts(self, refinement_dir, out_dir) -> str:
         """Replace old advice in prompts with the LLM-refined advice,
-        and switch the footer to request only <code> output."""
+        and switch the footer to request only <code> output.
+
+        Also: extract intrinsic names mentioned in the advice, look up
+        their correct declare signatures, and append them to the prompt
+        so the LLM generates correct IR."""
 
         OLD_HEADER = ("You may refer to the following advice, but feel free "
                       "to adapt, extend, or deviate from it as you see fit.")
@@ -235,7 +240,6 @@ class IROptimizer:
             old_advice = extract_single_block(ctx, "advice")
 
             if old_advice is None:
-                # No advice block yet — inject one after </code>
                 ctx = ctx.replace(
                     "</code>\n",
                     f"</code>\n\n{NEW_HEADER}\n<advice>\n{new_advice}\n</advice>\n",
@@ -246,21 +250,60 @@ class IROptimizer:
             ctx = ctx.replace(OLD_HEADER, NEW_HEADER)
             ctx = ctx.replace(OLD_FOOTER, NEW_FOOTER)
 
-            # Remove intrinsics block and all surrounding instruction text
-            # Matches from "IMPORTANT:" all the way past "</intrinsics>" and
-            # any trailing instruction lines until the next blank line or tag
+            # Remove intrinsics block and surrounding instruction text
             ctx = re.sub(
                 r"IMPORTANT:.*?</intrinsics>\s*"
                 r"(?:In your.*?\n)*\s*",
                 "", ctx, flags=re.DOTALL,
             )
-            # Fallback: remove just the tags if the above didn't match
             ctx = re.sub(r"<intrinsics>.*?</intrinsics>\s*", "", ctx, flags=re.DOTALL)
+
+            # Extract intrinsic names from the refined advice and attach
+            # their correct declare signatures
+            if new_advice and self._intrinsic_advisor is not None:
+                intrinsic_sigs = self._extract_intrinsic_signatures(new_advice)
+                if intrinsic_sigs:
+                    sig_block = (
+                        "\nThe following intrinsic signatures are referenced "
+                        "in the advice above. Use these exact declarations "
+                        "in your output IR:\n"
+                        + "\n".join(intrinsic_sigs)
+                        + "\n"
+                    )
+                    # Insert before the final instruction line
+                    ctx = ctx.replace(NEW_FOOTER, sig_block + "\n" + NEW_FOOTER)
+                    log(f"  {prefix}: attached {len(intrinsic_sigs)} intrinsic signatures")
 
             (out_dir / f"{prefix}.prompt.ll").write_text(ctx, encoding="utf-8")
 
         log(f"Rewritten prompts saved to: {out_dir}")
         return str(out_dir)
+
+    def _extract_intrinsic_signatures(self, text: str) -> List[str]:
+        """Find @llvm.* intrinsic names in text and return their declare lines.
+
+        If an intrinsic is not found in the declares DB, marks it as
+        invalid so the LLM knows not to use it."""
+        if self._intrinsic_advisor is None:
+            return []
+        names = set(re.findall(r"@(llvm\.[a-zA-Z0-9_.]+)", text))
+        sigs = []
+        seen = set()
+        for name in sorted(names):
+            decl = self._intrinsic_advisor._get_declare(name)
+            if decl and decl not in seen:
+                sigs.append(decl)
+                seen.add(decl)
+            elif not decl:
+                warning = (
+                    f"; WARNING: @{name} does NOT exist in LLVM. "
+                    f"Do NOT use this intrinsic — it will cause a compilation error."
+                )
+                if warning not in seen:
+                    sigs.append(warning)
+                    seen.add(warning)
+                    log(f"  WARN: intrinsic @{name} not found in declares DB (hallucination?)")
+        return sigs
 
     # ------------------------------------------------------------------
     # Single-file mode
@@ -422,6 +465,7 @@ class IROptimizer:
                     emb_model = getattr(cfg, "intrinsic_embedding_model", "")
                     self._intrinsic_advisor = IntrinsicAdvisor(
                         kb_path, emb_model, host_features=host_features,
+                        declares_path=getattr(cfg, "intrinsic_declares_path", ""),
                     )
                 ir_items = []
                 for ll_file in sorted(Path(data_path).glob("*.ll")):
@@ -633,6 +677,7 @@ class IROptimizer:
                         host_features = self._detect_host_features()
                         advisor = IntrinsicAdvisor(
                             kb_path, emb_model, host_features=host_features,
+                            declares_path=getattr(cfg, "intrinsic_declares_path", ""),
                         )
                         ir_file = list(Path(str(dataset_dir)).glob("*.ll"))
                         if ir_file:
