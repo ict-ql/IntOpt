@@ -406,17 +406,70 @@ _REDUNDANT_VEC_TYPE_RE = re.compile(
     r"(?P<const>\s+<[^>]*>)",                   # the constant vector value
 )
 
+# Case B: redundant type on first operand when it's a constant vector
+#   icmp ult <64 x i64> <64 x i64> <i64 0, ...>, %nvec
+#   The type appears twice before the constant: once as the instruction
+#   type and once as the constant's type prefix.
+_REDUNDANT_VEC_TYPE_FIRST_RE = re.compile(
+    r"(?P<pre>"
+    + "|".join(_BINOP_KEYWORDS)
+    + r")"
+    r"(?P<flags>[^<]*?)"                       # optional flags
+    r"(?P<vecty><\d+\s+x\s+[^>]+>)"           # instruction vector type
+    r"\s+(?P=vecty)"                            # redundant repeat before constant
+    r"(?P<const>\s+<[^>]*>)",                   # the constant vector value
+)
+
+# Case C: scalar type repeated  e.g.  xor i1 i1 %x, true
+#   op [flags] <scalar_ty> <scalar_ty> operand
+_SCALAR_TYPES = r"(?:i\d+|float|double|half|bfloat|ptr)"
+_REDUNDANT_SCALAR_TYPE_RE = re.compile(
+    r"(?P<pre>"
+    + "|".join(_BINOP_KEYWORDS)
+    + r")"
+    r"(?P<flags>\s+(?:nsw|nuw|exact|eq|ne|ugt|uge|ult|ule|sgt|sge|slt|sle"
+    r"|oeq|ogt|oge|olt|ole|one|ord|ueq|une|uno|true|false)\s+|\s+)"
+    r"(?P<sty>" + _SCALAR_TYPES + r")"
+    r"\s+(?P=sty)"                              # redundant repeat
+    r"(?P<rest>\s+.+)",
+)
+
+
+def _repl_scalar(m: re.Match) -> str:
+    return m.group("pre") + m.group("flags") + m.group("sty") + m.group("rest")
+
 
 def _strip_redundant_vec_type(ir_text: str) -> str:
-    """Remove redundant vector type prefix on the second operand of binary ops.
+    """Remove redundant type prefix on operands of binary ops.
 
-    Converts:  and <32 x i8> %v, <32 x i8> <i8 15, ...>
-    To:        and <32 x i8> %v, <i8 15, ...>
+    Case A (second operand, vector):
+      and <32 x i8> %v, <32 x i8> <i8 15, ...>
+      →  and <32 x i8> %v, <i8 15, ...>
+
+    Case B (first operand is a constant vector):
+      icmp ult <64 x i64> <64 x i64> <i64 0, ...>, %nvec
+      →  icmp ult <64 x i64> <i64 0, ...>, %nvec
+
+    Case C (scalar type repeated):
+      xor i1 i1 %isnull, true
+      →  xor i1 %isnull, true
     """
-    def _repl(m: re.Match) -> str:
+    # Case A: redundant type on second operand
+    def _repl_a(m: re.Match) -> str:
         return (m.group("pre") + m.group("flags") + m.group("vecty")
                 + m.group("op1") + m.group("const"))
-    return _REDUNDANT_VEC_TYPE_RE.sub(_repl, ir_text)
+    ir_text = _REDUNDANT_VEC_TYPE_RE.sub(_repl_a, ir_text)
+
+    # Case B: redundant type on first operand (constant vector)
+    def _repl_b(m: re.Match) -> str:
+        return (m.group("pre") + m.group("flags") + m.group("vecty")
+                + m.group("const"))
+    ir_text = _REDUNDANT_VEC_TYPE_FIRST_RE.sub(_repl_b, ir_text)
+
+    # Case C: scalar type repeated  e.g.  xor i1 i1 %x, ...
+    ir_text = _REDUNDANT_SCALAR_TYPE_RE.sub(_repl_scalar, ir_text)
+
+    return ir_text
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +479,56 @@ def _strip_redundant_vec_type(ir_text: str) -> str:
 # E.g.  %i = phi i32 [ 0, %outer.loop ], [ %i.next, %vec.loop ]
 # where %vec.loop is the current block, not a predecessor.
 # We build a simple CFG and fix incoming labels to actual predecessors.
+
+def _fix_vector_constant_types(ir_text: str) -> str:
+    """Fix vector constants missing per-element type annotations.
+
+    LLMs often write:
+      <8 x i64> <i64 0, 1, 2, 3, 4, 5, 6, 7>
+    instead of:
+      <8 x i64> <i64 0, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6, i64 7>
+    """
+    # Match: <N x TYPE> <TYPE val, val, val, ...>
+    # where some elements are missing the TYPE prefix
+    def _fix_vec(m: re.Match) -> str:
+        vec_type = m.group(0)
+        # Extract the element type from the vector type
+        type_m = re.match(r"<\d+\s+x\s+(\w+)>\s*<", vec_type)
+        if not type_m:
+            return vec_type
+        elem_type = type_m.group(1)  # e.g. "i64", "float", "double"
+
+        # Find the content between < ... >
+        # We need to find the matching closing >
+        start = vec_type.index("<", vec_type.index(">") + 1)
+        inner = vec_type[start + 1:-1]  # content between < and >
+
+        # Split by comma and fix each element
+        parts = inner.split(",")
+        fixed = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            # Check if it already has the type prefix
+            if part.startswith(elem_type) or part.startswith("undef") or part.startswith("poison") or part.startswith("zeroinitializer"):
+                fixed.append(part)
+            elif re.match(r"^-?\d+(\.\d+)?([eE][+-]?\d+)?$", part):
+                # Bare number — add type prefix
+                fixed.append(f"{elem_type} {part}")
+            else:
+                fixed.append(part)
+
+        return f"{vec_type[:start + 1]}{', '.join(fixed)}>"
+
+    # Pattern: <N x TYPE> <...>
+    ir_text = re.sub(
+        r"<\d+\s+x\s+\w+>\s*<[^>]+>",
+        _fix_vec,
+        ir_text,
+    )
+    return ir_text
+
 
 def _fix_phi_predecessors(ir_text: str) -> str:
     """Fix phi nodes that reference non-predecessor blocks.
@@ -593,6 +696,7 @@ class PostProcessor:
             ctx = _fix_return_deref_attrs(ctx)
             ctx = _fix_missing_terminators(ctx)
             ctx = _strip_redundant_vec_type(ctx)
+            ctx = _fix_vector_constant_types(ctx)
             ctx = _fix_phi_predecessors(ctx)
             f.write_text(ctx, encoding="utf-8")
 
