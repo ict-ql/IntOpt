@@ -1266,6 +1266,10 @@ class IROptimizer:
                 )
 
         log("Running full diff-testing pipeline")
+        # Post-process optimized IR before combining
+        log("Post-processing optimized IR ...")
+        self.post_proc.run(in_dir=optimized_dir, pattern="*.optimized.ll")
+
         results = self.diff_tester.run_full(
             original_dir=original_dir,
             optimized_dir=optimized_dir,
@@ -1331,6 +1335,10 @@ class IROptimizer:
         if combined_dir.is_dir() and any(combined_dir.glob("*/combined.ll")):
             log("Reusing existing combined IR")
         else:
+            # Post-process optimized IR before combining
+            log("Post-processing optimized IR ...")
+            self.post_proc.run(in_dir=optimized_dir, pattern="*.optimized.ll")
+
             self.diff_tester.prepare_combined(
                 original_dir, optimized_dir, str(combined_dir),
             )
