@@ -282,8 +282,9 @@ class IROptimizer:
     def _extract_intrinsic_signatures(self, text: str) -> List[str]:
         """Find @llvm.* intrinsic names in text and return their declare lines.
 
-        If an intrinsic is not found in the declares DB, marks it as
-        invalid so the LLM knows not to use it."""
+        If an intrinsic is OVERLOADED (valid but type-parameterized), skip
+        the signature (the LLM should infer the correct types from context).
+        If not found at all, mark as invalid."""
         if self._intrinsic_advisor is None:
             return []
         names = set(re.findall(r"@(llvm\.[a-zA-Z0-9_.]+)", text))
@@ -291,7 +292,10 @@ class IROptimizer:
         seen = set()
         for name in sorted(names):
             decl = self._intrinsic_advisor._get_declare(name)
-            if decl and decl not in seen:
+            if decl == "OVERLOADED":
+                # Valid intrinsic, just overloaded — no fixed signature to attach
+                continue
+            elif decl and decl not in seen:
                 sigs.append(decl)
                 seen.add(decl)
             elif not decl:

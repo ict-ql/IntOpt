@@ -88,15 +88,18 @@ def extract_declares(llvm_root: str) -> dict:
 
     log(f"Scanned {file_count} files total, found {len(declares)} unique intrinsics")
 
-    # Convert sets to sorted lists, deduplicated
+    # Convert sets to deduplicated results.
+    # For intrinsics with multiple variants (e.g. old 1-arg vs correct 2-arg),
+    # prefer the one with the most parameters (most complete signature).
     result = {}
     for name, decl_set in sorted(declares.items()):
         sigs = sorted(decl_set)
         if len(sigs) == 1:
-            # Non-overloaded: store as single string
             result[name] = sigs[0]
         else:
-            # Overloaded: keep up to 3 representative variants
+            # Sort by number of commas (≈ number of params), descending
+            # so the most complete signature comes first
+            sigs.sort(key=lambda s: s.count(","), reverse=True)
             result[name] = sigs[:3]
 
     return result

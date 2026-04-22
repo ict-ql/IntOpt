@@ -551,20 +551,21 @@ class IntrinsicAdvisor:
     def _get_declare(self, intrinsic_name: str) -> str:
         """Look up the declare signature for an intrinsic.
 
-        Tries exact match first, then base name (without type suffix).
-        Ensures the returned string starts with 'declare'."""
+        Returns the declare line, or "OVERLOADED" if the intrinsic is
+        valid but overloaded (no fixed signature), or "" if not found."""
         self._load_declares()
         assert self._declares is not None
 
         def _extract(val) -> str:
             if isinstance(val, str):
+                if val == "OVERLOADED":
+                    return "OVERLOADED"
                 s = val
             elif isinstance(val, list) and val:
-                s = val[0]
+                s = max(val, key=lambda x: x.count(","))
             else:
                 return ""
-            # Ensure 'declare' prefix (extraction regex may have stripped it)
-            if s and not s.strip().startswith("declare"):
+            if s and s != "OVERLOADED" and not s.strip().startswith("declare"):
                 s = "declare " + s.strip()
             return s
 
@@ -572,7 +573,8 @@ class IntrinsicAdvisor:
         if intrinsic_name in self._declares:
             return _extract(self._declares[intrinsic_name])
 
-        # Try base name: llvm.fma.v4f32 → llvm.fma
+        # Try progressively shorter base names:
+        # llvm.ctlz.i32 → llvm.ctlz (overloaded base)
         parts = intrinsic_name.split(".")
         for i in range(len(parts) - 1, 1, -1):
             base = ".".join(parts[:i])
