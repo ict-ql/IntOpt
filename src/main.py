@@ -303,11 +303,17 @@ class IROptimizer:
 
             # Remove intrinsics block and surrounding instruction text
             ctx = re.sub(
+                r"The following hardware intrinsics.*?</intrinsics>\s*",
+                "", ctx, flags=re.DOTALL,
+            )
+            # Fallback: remove just the tags if the above didn't match
+            ctx = re.sub(r"<intrinsics>.*?</intrinsics>\s*", "", ctx, flags=re.DOTALL)
+            # Clean up old IMPORTANT pattern (from previous versions)
+            ctx = re.sub(
                 r"IMPORTANT:.*?</intrinsics>\s*"
                 r"(?:In your.*?\n)*\s*",
                 "", ctx, flags=re.DOTALL,
             )
-            ctx = re.sub(r"<intrinsics>.*?</intrinsics>\s*", "", ctx, flags=re.DOTALL)
 
             # Extract intrinsic names from the refined advice and attach
             # their correct declare signatures

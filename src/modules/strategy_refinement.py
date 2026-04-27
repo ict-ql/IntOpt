@@ -295,17 +295,12 @@ class StrategyRefinement:
         parts += ["</analysis>", ""]
         if intrinsic_advice:
             parts += [
-                "IMPORTANT: The following hardware intrinsics are available on "
-                "the target CPU and are highly relevant to this code. You SHOULD "
-                "actively try to use them in your optimized IR where applicable. "
-                "These intrinsics map directly to efficient hardware instructions "
-                "and can provide significant speedups over scalar/generic code.",
-                "",
+                "The following hardware intrinsics are available on the target "
+                "CPU. Consider using them only if they clearly match the "
+                "computation patterns in this code. Do NOT force their use — "
+                "only adopt an intrinsic when you are confident it is correct "
+                "and beneficial. Incorrect intrinsic usage will break the program.",
                 "<intrinsics>", intrinsic_advice, "</intrinsics>", "",
-                "In your <advice>, explicitly state which intrinsics you plan to "
-                "use and why. In your <code>, use the LLVM IR call syntax to "
-                "invoke them (e.g., `call <ret_ty> @llvm.x86.avx512.vfmadd.ps.512(...)`).",
-                "",
             ]
         parts += [
             "You need to keep boundary checks.",
