@@ -132,7 +132,10 @@ class IROptimizer:
                 cache_key=cache_key,
                 boost_threshold=boost_thresh,
             )
-            result = self._intrinsic_advisor.format_suggestions(suggestions)
+            result = self._intrinsic_advisor.format_suggestions(
+                suggestions,
+                score_threshold=getattr(cfg, "intrinsic_score_threshold", 0.0),
+            )
             if result:
                 log(f"Intrinsic advisor: {len(suggestions)} suggestions retrieved")
             else:
@@ -546,7 +549,10 @@ class IROptimizer:
                         boost_threshold=getattr(cfg, "intrinsic_relevance_threshold", 0.45),
                     )
                     for key, suggestions in batch_results.items():
-                        text = self._intrinsic_advisor.format_suggestions(suggestions)
+                        text = self._intrinsic_advisor.format_suggestions(
+                            suggestions,
+                            score_threshold=getattr(cfg, "intrinsic_score_threshold", 0.0),
+                        )
                         if text:
                             intrinsic_advice_map[key] = text
                     log(f"Intrinsic advisor: generated advice for "
@@ -755,7 +761,10 @@ class IROptimizer:
                                 cache_key=ir_file[0].stem,
                                 boost_threshold=getattr(cfg, "intrinsic_relevance_threshold", 0.45),
                             )
-                            intrinsic_text = advisor.format_suggestions(suggestions)
+                            intrinsic_text = advisor.format_suggestions(
+                                suggestions,
+                                score_threshold=getattr(cfg, "intrinsic_score_threshold", 0.0),
+                            )
                             if intrinsic_text:
                                 log(f"  Retrieved {len(suggestions)} intrinsic suggestions")
                     except Exception as e:

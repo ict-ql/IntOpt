@@ -4,14 +4,13 @@ Offline (build_kb):
   1. Parse IntrinsicImpl.inc → extract all intrinsic names
   2. Classify by architecture (x86, aarch64, generic, ...)
   3. Call LLM to get a short description for each intrinsic
-  4. Embed descriptions with a sentence-transformer model
-  5. Save (name, arch, description, embedding) to a JSON+npy file
+  4. Save (name, arch, description) to a JSON file
 
-Online (query_kb):
-  1. Summarize the IR's semantics via LLM
-  2. Embed the summary
-  3. Cosine-similarity search against the KB
-  4. Return top-k intrinsic suggestions
+Online (suggest / batch_suggest):
+  1. Summarize the IR's computation patterns via LLM using
+     hardware-oriented vocabulary (multiply-add, reduction, SAD, ...)
+  2. TF-IDF cosine similarity search against intrinsic descriptions
+  3. Return top-k intrinsic suggestions
 """
 
 import json
@@ -310,57 +309,32 @@ def generate_descriptions_batch(
 
 
 # ======================================================================
-# 3. Embedding + KB persistence
+# 3. KB persistence (JSON only, no embeddings)
 # ======================================================================
-
-def embed_texts(
-    texts: List[str],
-    model_path: str,
-    batch_size: int = 256,
-) -> np.ndarray:
-    """Embed a list of texts using a sentence-transformer model.
-
-    Returns (N, dim) float32 numpy array."""
-    from sentence_transformers import SentenceTransformer
-
-    log(f"Loading embedding model: {model_path}")
-    model = SentenceTransformer(model_path)
-
-    log(f"Embedding {len(texts)} texts ...")
-    embeddings = model.encode(
-        texts, batch_size=batch_size,
-        show_progress_bar=True, normalize_embeddings=True,
-    )
-    return np.array(embeddings, dtype=np.float32)
 
 
 def build_kb(
     inc_path: str,
     output_path: str,
     llm_client,
-    embedding_model: str,
     archs: Set[str] = {"x86", "generic"},
     model: str = "gpt-5",
     api_mode: str = "auto",
     batch_size: int = 50,
     limit: int = 0,
+    **kwargs,
 ) -> str:
-    """Build the intrinsic knowledge base (offline), one file per arch.
+    """Build the intrinsic knowledge base (offline), one JSON per arch.
 
-    Output files: <output_dir>/intrinsic.<arch>.json + .npy for each arch.
-
-    *limit*: if >0, only process the first N intrinsics per arch (for debugging).
-
+    Output files: <output_dir>/intrinsic.<arch>.json for each arch.
     Returns the output directory."""
     output_dir = Path(output_path)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: parse all intrinsic names
     log(f"Parsing intrinsics from {inc_path} ...")
     all_entries = parse_intrinsic_names(inc_path)
     log(f"Total intrinsics: {len(all_entries)}")
 
-    # Group by arch
     by_arch: Dict[str, List[Dict[str, str]]] = {}
     for e in all_entries:
         if e["arch"] in archs:
@@ -375,7 +349,6 @@ def build_kb(
             entries = entries[:limit]
             log(f"Debug mode: limited to first {limit} intrinsic(s)")
 
-        # Step 2: generate descriptions
         log("Generating descriptions via LLM ...")
         descriptions = generate_descriptions_batch(
             entries, llm_client,
@@ -383,9 +356,7 @@ def build_kb(
         )
         log(f"Got descriptions for {len(descriptions)} intrinsics")
 
-        # Build KB entries
         kb_entries = []
-        desc_texts = []
         for e in entries:
             desc = descriptions.get(e["name"], f"LLVM intrinsic {e['name']}")
             kb_entries.append({
@@ -393,20 +364,12 @@ def build_kb(
                 "arch": e["arch"],
                 "description": desc,
             })
-            desc_texts.append(f"{e['name']}: {desc}")
 
-        # Step 3: embed
-        embeddings = embed_texts(desc_texts, embedding_model)
-
-        # Step 4: save per-arch files
         json_path = output_dir / f"intrinsic.{arch}.json"
-        npy_path = output_dir / f"intrinsic.{arch}.npy"
-
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(kb_entries, f, ensure_ascii=False, indent=2)
-        np.save(npy_path, embeddings)
 
-        log(f"Saved: {json_path} ({len(kb_entries)} entries) + {npy_path}")
+        log(f"Saved: {json_path} ({len(kb_entries)} entries)")
         saved_files.append(str(json_path))
 
     log(f"\nAll done. Files: {saved_files}")
@@ -418,85 +381,57 @@ def build_kb(
 # ======================================================================
 
 _SUMMARY_PROMPT = """\
-Summarize the following LLVM IR in 2-3 sentences. Focus on:
-- What computation it performs (e.g., matrix multiply, sorting, hashing)
-- Key data types and sizes (float, double, i32, vectors)
-- Dominant patterns (loops, reductions, bit manipulation, memory access patterns)
+Describe the computation patterns in this LLVM IR in 2-3 short sentences.
+
+Only describe patterns that ARE present — never mention what is absent. \
+Use these hardware-oriented terms where applicable: \
+multiply-add, multiply-accumulate, dot-product, fused multiply-add, \
+sum of absolute differences, horizontal add, reduction, accumulate, \
+min/max, clamp, compare-and-select, saturating arithmetic, \
+absolute value, reciprocal, sqrt, divide, \
+bit shift, popcount, leading zero count, trailing zero count, byte swap, \
+bitwise AND/OR/XOR, bit extract, bit deposit, \
+string compare, byte compare, \
+gather, scatter, masked load/store.
+
+State the element data types (i8, i16, i32, i64, float, double) and \
+whether there are loops. Do not suggest instructions or analyze feasibility. \
+If there are no vectorizable patterns, output only: "no vectorizable patterns"
 
 LLVM IR:
 {ir_text}
 """
 
 
-def _intrinsic_tier_boost(name: str) -> float:
-    """Return a multiplicative boost factor based on instruction "tier".
-
-    Higher-tier (more powerful) instructions get a larger boost so they
-    rank above simple scalar intrinsics at similar cosine similarity.
-
-    Tier 5 (1.5x): AMX tile operations (tdp*, tile*)
-    Tier 4 (1.35x): AVX-512 vector ops (avx512*, 512-bit)
-    Tier 3 (1.2x): AVX2 / 256-bit vector ops
-    Tier 2 (1.1x): SSE / 128-bit vector ops, VNNI
-    Tier 1 (1.0x): generic scalar intrinsics
-    Tier 0 (0.7x): internal/debug/experimental intrinsics (demoted)
-    """
-    n = name.lower()
-
-    # Demote: internal codegen forms, debug, experimental, donothing
-    if ".internal" in n or "donothing" in n or "experimental" in n:
-        return 0.7
-    if "dbg." in n or "lifetime." in n or "invariant." in n:
-        return 0.7
-
-    # Tier 5: AMX tile operations
-    if "tdp" in n or "tile" in n or "amx" in n:
-        return 1.5
-
-    # Tier 4: AVX-512 (512-bit vectors)
-    if "avx512" in n or ".512" in n or "512" in n:
-        return 1.35
-
-    # Tier 3: AVX2 / 256-bit
-    if "avx2" in n or ".256" in n:
-        return 1.2
-
-    # Tier 2: SSE4 / VNNI / 128-bit SIMD
-    if "sse4" in n or "vnni" in n or "vpdp" in n:
-        return 1.1
-    if "sse" in n or "ssse" in n or ".128" in n:
-        return 1.05
-
-    # Tier 1.5: vector reduce, masked ops (target-independent but powerful)
-    if "vector.reduce" in n or "masked." in n or "vp." in n:
-        return 1.15
-
-    # Tier 1: everything else (generic scalar)
-    return 1.0
 
 
 class IntrinsicAdvisor:
-    """Online intrinsic suggestion engine backed by a pre-built KB."""
+    """Online intrinsic suggestion engine backed by a pre-built KB.
+
+    Matching uses TF-IDF cosine similarity between the IR's
+    hardware-oriented computation summary and intrinsic descriptions.
+    """
 
     def __init__(
         self,
         kb_path: str,
-        embedding_model_path: str,
+        embedding_model_path: str = "",
         host_features: Optional[Set[str]] = None,
         declares_path: str = "",
     ):
-        """*kb_path*: directory with intrinsic.<arch>.json/npy or single .json.
+        """*kb_path*: directory with intrinsic.<arch>.json files.
         *declares_path*: path to intrinsic_declares.json (declare signatures).
         *host_features*: if provided, filter out unsupported intrinsics.
+        *embedding_model_path*: ignored (kept for API compat).
         """
         self.kb_path = kb_path
-        self.embedding_model_path = embedding_model_path
         self.host_features = host_features
         self.declares_path = declares_path
         self._kb: Optional[List[Dict]] = None
-        self._embeddings: Optional[np.ndarray] = None
-        self._embed_model = None
         self._declares: Optional[Dict[str, List[str]]] = None
+        # TF-IDF index
+        self._tfidf_vec = None
+        self._tfidf_matrix = None
 
     def _load_kb(self):
         if self._kb is not None:
@@ -504,26 +439,16 @@ class IntrinsicAdvisor:
 
         p = Path(self.kb_path)
         all_entries: List[Dict] = []
-        all_embeddings: List[np.ndarray] = []
 
         if p.is_dir():
-            # Load all intrinsic.<arch>.json + .npy pairs in the directory
             for json_file in sorted(p.glob("intrinsic.*.json")):
-                npy_file = json_file.with_suffix(".npy")
-                if not npy_file.exists():
-                    log(f"WARN: no .npy for {json_file.name}, skipping")
-                    continue
                 with open(json_file, "r", encoding="utf-8") as f:
                     entries = json.load(f)
-                embs = np.load(str(npy_file))
                 all_entries.extend(entries)
-                all_embeddings.append(embs)
                 log(f"Loaded {json_file.name}: {len(entries)} entries")
         elif p.suffix == ".json":
-            # Legacy single-file format
             with open(p, "r", encoding="utf-8") as f:
                 all_entries = json.load(f)
-            all_embeddings.append(np.load(str(p.with_suffix(".npy"))))
         else:
             raise SystemExit(f"KB path is not a directory or .json file: {p}")
 
@@ -531,9 +456,32 @@ class IntrinsicAdvisor:
             raise SystemExit(f"No KB entries loaded from {self.kb_path}")
 
         self._kb = all_entries
-        self._embeddings = np.vstack(all_embeddings) if all_embeddings else np.empty((0, 0))
+
+        # Build TF-IDF index over intrinsic descriptions
+        from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
+        from sklearn.metrics.pairwise import cosine_similarity as _cs
+
+        docs = []
+        for e in self._kb:
+            # Combine name tokens + description for richer TF-IDF features
+            name_tokens = e["name"].replace("llvm.", "").replace(".", " ")
+            docs.append(f"{name_tokens} {e.get('description', '')}")
+
+        # Domain stopwords that appear in almost every description
+        domain_stops = {
+            "used", "useful", "llvm", "intrinsic", "instruction",
+            "vector", "packed", "element", "lane", "bit",
+            "operation", "operations", "result", "value", "values",
+        }
+        stops = list(set(ENGLISH_STOP_WORDS) | domain_stops)
+
+        self._tfidf_vec = TfidfVectorizer(
+            ngram_range=(1, 3), min_df=1, stop_words=stops,
+        )
+        self._tfidf_matrix = self._tfidf_vec.fit_transform(docs)
+
         log(f"Intrinsic KB total: {len(self._kb)} entries, "
-            f"embeddings shape={self._embeddings.shape}")
+            f"TF-IDF matrix: {self._tfidf_matrix.shape}")
 
     def _load_declares(self):
         """Load intrinsic declare signatures from JSON."""
@@ -583,57 +531,72 @@ class IntrinsicAdvisor:
 
         return ""
 
-    def _get_embed_model(self):
-        if self._embed_model is None:
-            from sentence_transformers import SentenceTransformer
-            self._embed_model = SentenceTransformer(self.embedding_model_path)
-        return self._embed_model
 
-    def _embed_query(self, text: str) -> np.ndarray:
-        model = self._get_embed_model()
-        emb = model.encode([text], normalize_embeddings=True)
-        return np.array(emb, dtype=np.float32)[0]
 
     def _search_kb(
-        self, query_emb: np.ndarray, top_k: int,
+        self, query_text: str, top_k: int,
         arch_filter: Optional[Set[str]] = None,
-        boost_threshold: float = 0.45,
     ) -> List[Dict[str, str]]:
-        """Search KB by embedding, apply filters and boosting, return top-k."""
-        assert self._kb is not None and self._embeddings is not None
+        """Search KB by TF-IDF cosine similarity."""
+        assert self._kb is not None
+        assert self._tfidf_vec is not None
+        assert self._tfidf_matrix is not None
 
-        scores = self._embeddings @ query_emb  # (N,)
+        # Short-circuit: if the summary says no vectorizable patterns, skip
+        if "no vectorizable patterns" in query_text.lower():
+            return []
 
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        query_vec = self._tfidf_vec.transform([query_text])
+        scores = cosine_similarity(query_vec, self._tfidf_matrix)[0]
+
+        # Filter out compiler-internal / non-compute intrinsics
+        _SKIP_PATTERNS = [
+            "loop.decrement", "set.loop.iterations", "test.set.loop",
+            "test.start.loop", "start.loop.iterations",
+            "eh.return", "eh.sjlj", "eh.dwarf", "eh.typeid",
+            "coro.", "lifetime.", "invariant.", "dbg.",
+            "asan.", "msan.", "tsan.", "hwasan.",
+            "memprof.", "instrprof.", "pseudoprobe",
+            "donothing", "sideeffect", "experimental",
+            ".internal", "annotation", "assume",
+            "stacksave", "stackrestore", "stackprotector",
+            "get.dynamic.area", "pcmarker", "readcyclecounter",
+            "gcread", "gcwrite", "objc.", "swift.",
+            "addressofreturnaddress", "returnaddress", "frameaddress",
+            "clear_cache", "trap", "debugtrap", "ubsantrap",
+            "ptrauth.", "memcpy.inline", "memset.inline",
+            "is.constant", "expect", "preserve.struct",
+            "preserve.array", "preserve.union",
+            "type.test", "type.checked",
+        ]
+        for i, entry in enumerate(self._kb):
+            n = entry["name"].lower()
+            if any(p in n for p in _SKIP_PATTERNS):
+                scores[i] = -1.0
+
+        # Apply arch + host-feature filters
         if arch_filter:
             keep = arch_filter | {"generic"}
-            mask = np.array([e["arch"] in keep for e in self._kb], dtype=bool)
-            scores = np.where(mask, scores, -1.0)
+            for i, entry in enumerate(self._kb):
+                if entry["arch"] not in keep:
+                    scores[i] = -1.0
 
         if self.host_features is not None:
             for i, entry in enumerate(self._kb):
                 if scores[i] < 0:
                     continue
-                if intrinsic_requires_unsupported_feature(entry["name"], self.host_features):
+                if intrinsic_requires_unsupported_feature(
+                    entry["name"], self.host_features,
+                ):
                     scores[i] = -1.0
-
-        # Boost advanced instructions, but only when base cosine similarity
-        # is above the threshold. This prevents irrelevant high-tier intrinsics
-        # (e.g. AVX-512 fp16 min for an i32 program) from outranking
-        # genuinely relevant lower-tier ones.
-        for i, entry in enumerate(self._kb):
-            if scores[i] < 0:
-                continue
-            boost = _intrinsic_tier_boost(entry["name"])
-            if scores[i] >= boost_threshold:
-                scores[i] *= boost
-            elif boost < 1.0:
-                scores[i] *= boost
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         results = []
         for idx in top_indices:
             idx = int(idx)
-            if scores[idx] < 0:
+            if scores[idx] <= 0:
                 continue
             entry = self._kb[idx]
             results.append({
@@ -654,20 +617,16 @@ class IntrinsicAdvisor:
         arch_filter: Optional[Set[str]] = None,
         cache_dir: str = "",
         cache_key: str = "",
-        boost_threshold: float = 0.45,
+        **kwargs,
     ) -> List[Dict[str, str]]:
-        """Suggest intrinsics for a single IR.
-
-        *boost_threshold*: minimum cosine similarity to apply tier boosting.
-        Below this, high-tier intrinsics won't be promoted over relevant ones."""
+        """Suggest intrinsics for a single IR via TF-IDF matching."""
         self._load_kb()
 
         summary = self._get_or_generate_summary(
             ir_text, llm_client, model, api_mode, cache_dir, cache_key,
         )
 
-        query_emb = self._embed_query(summary)
-        return self._search_kb(query_emb, top_k, arch_filter, boost_threshold)
+        return self._search_kb(summary, top_k, arch_filter)
 
     def batch_suggest(
         self,
@@ -679,14 +638,9 @@ class IntrinsicAdvisor:
         arch_filter: Optional[Set[str]] = None,
         cache_dir: str = "",
         workers: int = 10,
-        boost_threshold: float = 0.45,
+        **kwargs,
     ) -> Dict[str, List[Dict[str, str]]]:
-        """Suggest intrinsics for multiple IRs in parallel.
-
-        *ir_items*: list of {key, ir_text} dicts.
-        *cache_dir*: directory to cache summaries ({key}.summary.txt).
-
-        Returns {key: [suggestions]}."""
+        """Suggest intrinsics for multiple IRs via TF-IDF matching."""
         self._load_kb()
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -727,18 +681,13 @@ class IntrinsicAdvisor:
                     if done % 20 == 0 or done == len(futs):
                         log(f"  Summaries: [{done}/{len(futs)}]")
 
-        # Phase 2: embed all summaries at once (batch)
-        keys_ordered = [item["key"] for item in ir_items]
-        texts = [summaries[k] for k in keys_ordered]
-        model_st = self._get_embed_model()
-        all_embs = model_st.encode(texts, normalize_embeddings=True,
-                                    batch_size=256, show_progress_bar=False)
-        all_embs = np.array(all_embs, dtype=np.float32)
-
-        # Phase 3: search KB for each
+        # Phase 2: TF-IDF search for each summary
         results: Dict[str, List[Dict[str, str]]] = {}
-        for i, key in enumerate(keys_ordered):
-            results[key] = self._search_kb(all_embs[i], top_k, arch_filter, boost_threshold)
+        for item in ir_items:
+            key = item["key"]
+            results[key] = self._search_kb(
+                summaries[key], top_k, arch_filter,
+            )
 
         return results
 
@@ -755,7 +704,7 @@ class IntrinsicAdvisor:
             summary = llm_client._call_with_retry(
                 prompt_text=prompt,
                 model=model,
-                max_output_tokens=512,
+                max_output_tokens=200,
                 temperature=0.3,
                 truncation="auto",
                 store=False,
@@ -798,19 +747,32 @@ class IntrinsicAdvisor:
         self._write_cached_summary(cache_dir, cache_key, summary)
         return summary
 
-    def format_suggestions(self, suggestions: List[Dict[str, str]]) -> str:
+    def format_suggestions(
+        self,
+        suggestions: List[Dict[str, str]],
+        score_threshold: float = 0.0,
+    ) -> str:
         """Format suggestions as text for the refinement prompt.
 
+        *score_threshold*: only include suggestions with score >= this value.
         Signatures are NOT included here — they are attached later in
         the realization prompt by _rewrite_prompts."""
         if not suggestions:
+            return ""
+
+        filtered = [
+            s for s in suggestions
+            if float(s["score"]) >= score_threshold
+        ] if score_threshold > 0 else suggestions
+
+        if not filtered:
             return ""
 
         parts = [
             "Available hardware intrinsics (ranked by relevance):",
             "",
         ]
-        for i, s in enumerate(suggestions, 1):
+        for i, s in enumerate(filtered, 1):
             parts.append(
                 f"{i}. @{s['name']} [{s['arch']}] (relevance={s['score']})"
             )
