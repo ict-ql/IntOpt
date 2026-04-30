@@ -4,5 +4,6 @@ corpus*/
 config/*.yaml
 src/modules/__pycache__
 opentuner/*
+harness.*/
 .kiro
 tool

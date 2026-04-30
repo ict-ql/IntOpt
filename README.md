@@ -135,6 +135,23 @@ python scripts/ask_llm.py --config config/config.yaml
 python scripts/ask_llm.py --config config/config.yaml --model deepseek-v3.2 -p "hello"
 
 
+### TSVC 消融实验你
+* 先看看有多少 case 有 intrinsic
+python scripts/ablation_intrinsic.py \
+  --experiment-dir test/TSVC_2/intoptplus_results \
+  --config config/config.yaml --dry-run
+
+* 跑消融实验
+python scripts/ablation_intrinsic.py \
+  --experiment-dir test/TSVC_2/intoptplus_results \
+  --config config/config.yaml \
+  --tsvc-src test/TSVC_2/src \
+  --split-c test/TSVC_2/split/c
+
+* 结果在 test/TSVC_2/intoptplus_results/ablation_no_intrinsic/opt/
+* 然后用 run_tsvc_eval.sh对比
+
+
 ## Configuration
 
 All settings live in `config/config.yaml`:
