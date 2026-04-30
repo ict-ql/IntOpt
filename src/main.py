@@ -446,6 +446,7 @@ class IROptimizer:
             out_dir=refine_dir,
             model=cfg.llm_model,
             api_mode=cfg.api_mode,
+            max_output_tokens=getattr(cfg, "max_output_tokens", 8192),
             workers=1,
         )
 
@@ -458,6 +459,7 @@ class IROptimizer:
             out_dir=realize_dir,
             model=cfg.llm_model,
             api_mode=cfg.api_mode,
+            max_output_tokens=getattr(cfg, "max_output_tokens", 8192),
             workers=1,
         )
 
@@ -576,6 +578,7 @@ class IROptimizer:
             out_dir=refine_dir,
             model=cfg.llm_model,
             api_mode=cfg.api_mode,
+            max_output_tokens=getattr(cfg, "max_output_tokens", 8192),
             workers=min(cfg.workers, n_files),
         )
 
@@ -588,6 +591,7 @@ class IROptimizer:
             out_dir=realize_dir,
             model=cfg.llm_model,
             api_mode=cfg.api_mode,
+            max_output_tokens=getattr(cfg, "max_output_tokens", 8192),
             workers=min(cfg.workers, n_files),
         )
 
@@ -817,6 +821,7 @@ class IROptimizer:
                 out_dir=refine_dir,
                 model=cfg.llm_model,
                 api_mode=cfg.api_mode,
+            max_output_tokens=getattr(cfg, "max_output_tokens", 8192),
                 workers=1,
             )
             # Show only <advice> block from refined strategy
@@ -846,6 +851,7 @@ class IROptimizer:
                 out_dir=realize_dir,
                 model=cfg.llm_model,
                 api_mode=cfg.api_mode,
+            max_output_tokens=getattr(cfg, "max_output_tokens", 8192),
                 workers=1,
             )
             # Show only <code> block from generated IR

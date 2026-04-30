@@ -72,7 +72,10 @@ class LLMClient:
     @staticmethod
     def _extract_chat_text(resp) -> str:
         try:
-            return resp.choices[0].message.content or ""
+            choices = getattr(resp, "choices", None)
+            if not choices:
+                return str(resp)
+            return choices[0].message.content or ""
         except Exception:
             return str(resp)
 
@@ -85,24 +88,28 @@ class LLMClient:
         prompt_text: str,
         model: str,
         max_output_tokens: int,
-        temperature: float,
-        truncation: str,
-        store: bool,
-        api_mode: str,
-        max_retries: int,
-        base_backoff: float,
+        temperature: float = None,
+        truncation: str = "auto",
+        store: bool = False,
+        api_mode: str = "auto",
+        max_retries: int = 2,
+        base_backoff: float = 1.0,
     ) -> str:
         client = self._get_client()
 
         def _via_responses() -> str:
-            resp = client.responses.create(
+            kwargs = dict(
                 model=model,
                 input=prompt_text,
                 max_output_tokens=max_output_tokens,
-                temperature=temperature,
                 truncation=truncation,
                 store=store,
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            resp = client.responses.create(**kwargs)
+            if resp is None:
+                raise RuntimeError("responses API returned None")
             out = getattr(resp, "output_text", None)
             result = str(resp) if out is None else out
             if not result or not result.strip():
@@ -112,12 +119,14 @@ class LLMClient:
 
         def _via_chat() -> str:
             try:
-                resp = client.chat.completions.create(
+                kwargs = dict(
                     model=model,
                     messages=[{"role": "user", "content": prompt_text}],
-                    temperature=temperature,
                     store=store,
                 )
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
+                resp = client.chat.completions.create(**kwargs)
                 result = self._extract_chat_text(resp)
                 return result
             except Exception as e:

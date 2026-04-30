@@ -704,8 +704,7 @@ class IntrinsicAdvisor:
             summary = llm_client._call_with_retry(
                 prompt_text=prompt,
                 model=model,
-                max_output_tokens=200,
-                temperature=0.3,
+                max_output_tokens=8192,
                 truncation="auto",
                 store=False,
                 api_mode=api_mode,
